@@ -10,7 +10,9 @@
   "scripts": {
     "dev": "node --watch src/host.mjs",
     "start": "node src/host.mjs",
-    "dev:qq": "bash scripts/qq-web-bridge.sh"
+    "dev:qq": "bash scripts/qq-web-bridge.sh",
+    "detect:qq": "node src/qq-detect.mjs --all",
+    "test": "node --test"
   },
   "dependencies": {
     "ws": "^8.18.3"
