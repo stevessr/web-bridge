@@ -1,0 +1,107 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #101114;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #101114;
+}
+
+body {
+  display: grid;
+  grid-template-rows: 32px 1fr;
+}
+
+#statusbar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: #17191e;
+  color: #c8ccd4;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  font-size: 12px;
+  user-select: none;
+}
+
+#statusbar .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d26a6a;
+  box-shadow: 0 0 0 3px rgba(210,106,106,.12);
+}
+
+body[data-connected="true"] #statusbar .dot {
+  background: #6fcf97;
+  box-shadow: 0 0 0 3px rgba(111,207,151,.12);
+}
+
+#meta {
+  margin-left: auto;
+  opacity: .65;
+  max-width: 50vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, rgba(255,255,255,.018) 25%, transparent 25%, transparent 75%, rgba(255,255,255,.018) 75%),
+    linear-gradient(45deg, rgba(255,255,255,.018) 25%, transparent 25%, transparent 75%, rgba(255,255,255,.018) 75%),
+    #0d0e11;
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
+}
+
+#viewport::after {
+  content: "";
+  display: block;
+  width: var(--scaled-width, 100%);
+  height: var(--scaled-height, 100%);
+  pointer-events: none;
+}
+
+#scaler {
+  position: absolute;
+  inset: 0 auto auto 0;
+  transform-origin: 0 0;
+}
+
+#stage {
+  position: relative;
+  overflow: hidden;
+  background: white;
+  isolation: isolate;
+}
+
+#stage [data-web-bridge-placeholder] {
+  position: relative;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+#stage [data-web-bridge-placeholder]::after {
+  content: attr(data-web-bridge-placeholder);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 11px/1.2 ui-monospace, monospace;
+  color: rgba(127,127,127,.75);
+  background: repeating-linear-gradient(135deg, rgba(127,127,127,.08) 0 8px, transparent 8px 16px);
+  pointer-events: none;
+}
