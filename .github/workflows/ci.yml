@@ -15,7 +15,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
       - run: npm install --ignore-scripts
       - run: node --check src/cdp.mjs
       - run: node --check src/injected.mjs
