@@ -37,18 +37,36 @@ pnpm install
 pnpm dev:qq
 ```
 
-By default the launcher expects `/opt/QQ/qq`, starts it with a private CDP port, waits for the renderer, then serves the bridge on `http://127.0.0.1:8080`.
+The launcher now **auto-detects the installed QQ NT executable**. `QQ_BIN` is only needed as an explicit override.
 
-Override paths/ports when needed:
+Discovery checks, in priority order:
+
+1. `QQ_BIN` when explicitly set.
+2. A currently running native QQ process (useful for discovering the installation path; the launcher will still ask you to exit it before relaunching with CDP).
+3. `qq`, `linuxqq`, and `QQ` on `PATH`.
+4. Known native paths such as `/opt/QQ/qq` and `/usr/bin/linuxqq`.
+5. QQ/Tencent `.desktop` entries under the XDG application directories, including `Exec=env ... /path/to/linuxqq ...` forms.
+6. Installed-file lists from dpkg/pacman/rpm when available.
+7. QQ/AppImage candidates in `~/Applications` and `~/.local/bin`.
+
+Inspect every candidate and its discovery source with:
 
 ```bash
-QQ_BIN=/opt/QQ/qq \
+pnpm detect:qq
+```
+
+Override the result when needed:
+
+```bash
+QQ_BIN=/custom/path/to/qq \
 WEB_BRIDGE_PORT=8080 \
 WEB_BRIDGE_CDP_PORT=9222 \
 pnpm dev:qq
 ```
 
-If QQ is already running, fully exit it first. Electron single-instance handling can otherwise route the second launch into the existing process without enabling the requested debugging port.
+`QQ_BIN=linuxqq` also works when the command is on `PATH`.
+
+If QQ is already running, fully exit it first. Electron single-instance handling can otherwise route the second launch into the existing process without enabling the requested debugging port. The launcher reports the detected executable and existing PID to make this case easier to diagnose.
 
 ## Security model
 
@@ -66,6 +84,7 @@ This PoC currently has **no authentication/TLS layer**. Bind it to loopback or p
 Implemented:
 
 - attach to a QQ NT Chromium renderer through CDP
+- automatic native Linux QQ executable discovery with diagnostics and explicit override
 - sanitized DOM + computed-style reconstruction
 - shadow-root reconstruction
 - image/font/background resource relay through opaque tokens
