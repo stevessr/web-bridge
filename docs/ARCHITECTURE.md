@@ -23,17 +23,17 @@ Electron Main / host resources
 
 ## DOM capture
 
-The host installs `src/injected.mjs` through `Page.addScriptToEvaluateOnNewDocument` and `Runtime.evaluate`; QQ package files are unchanged. The helper assigns stable numeric IDs to live nodes, sanitizes attributes, computes the CSS properties required for layout/visual fidelity, records control/media state and observes document plus discovered Shadow Roots.
+The host installs `src/injected.mjs` through `Page.addScriptToEvaluateOnNewDocument` and `Runtime.evaluate`; QQ package files are unchanged. The helper assigns stable numeric IDs to live nodes, sanitizes attributes, computes the CSS properties required for layout/visual fidelity, records control/media state and observes document plus discovered open Shadow Roots.
 
 Initial connection uses a full snapshot. Mutation records are collapsed into bounded local patch sets instead of serializing the whole document after every update. Child-list changes replace only the affected child subtree; text, attribute/style/state and viewport changes use narrower patches. Patch overflow falls back to a full integrity snapshot.
 
-A periodic snapshot protects against unobservable state such as newly-created closed Shadow Roots or unusual custom rendering behavior.
+A periodic snapshot protects against synchronization drift and unusual custom rendering behavior that does not reliably produce useful mutation batches. Closed Shadow Roots remain an explicit compatibility boundary because normal page JavaScript cannot inspect them after creation.
 
 ## Revisions and recovery
 
 The host owns a monotonic revision number. A patch contains `baseRevision` and `revision`. A browser refuses a patch whose base does not match its local revision and asks for resynchronization.
 
-WebSocket send backpressure is monitored per client. A slow client is dropped from the live patch stream and receives `resyncRequired` after its send buffer recovers. This prevents one browser from causing unbounded host memory growth.
+WebSocket send backpressure is monitored per client. A slow client is dropped from the live patch/snapshot stream instead of accumulating an unbounded send queue and receives `resyncRequired` after its send buffer recovers. This prevents one browser from causing unbounded host memory growth.
 
 ## Input path
 
@@ -55,7 +55,7 @@ A client-side HTML file selection is streamed to a private temporary directory o
 
 ## Multi-client control
 
-Multiple clients may observe the same mirror. By default only one client has the controller lease; other clients are read-only. The lease can move after an idle timeout or explicit release. Concurrent controllers require the explicit `WEB_BRIDGE_MULTI_CONTROL=1` override.
+Multiple clients may observe the same mirror. By default only one client has the controller lease; other clients are read-only. The lease starts when control is assigned and can move after an idle timeout or explicit release. Concurrent controllers require the explicit `WEB_BRIDGE_MULTI_CONTROL=1` override.
 
 ## Deployment boundary
 

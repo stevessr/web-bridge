@@ -129,7 +129,10 @@ function releaseController(id) {
   if (config.allowMultipleControllers || controllerId !== id) return;
   controllerId = null;
   const next = [...clients.values()].find((state) => state.ws.readyState === WebSocket.OPEN);
-  if (next) controllerId = next.id;
+  if (next) {
+    next.lastInputAt = Date.now();
+    controllerId = next.id;
+  }
   broadcastStatus();
 }
 
@@ -137,6 +140,7 @@ function claimControl(state) {
   if (config.allowMultipleControllers) return true;
   const current = controllerId ? [...clients.values()].find((candidate) => candidate.id === controllerId) : null;
   if (!current || current.ws.readyState !== WebSocket.OPEN || Date.now() - current.lastInputAt > config.controlLeaseMs) {
+    state.lastInputAt = Date.now();
     controllerId = state.id;
     broadcastStatus();
     return true;
@@ -298,8 +302,9 @@ async function receiveUpload(req, url, res) {
       if (bytes > config.maxUploadBytes) throw new Error('upload-too-large');
       if (!output.write(chunk)) await once(output, 'drain');
     }
+    const finished = once(output, 'finish');
     output.end();
-    await once(output, 'finish');
+    await finished;
   } catch (error) {
     output.destroy();
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -400,7 +405,7 @@ server.on('upgrade', (req, socket, head) => {
 
 wss.on('connection', (ws) => {
   const id = randomBytes(8).toString('hex');
-  const state = { id, ws, limiter: new TokenBucket(config.maxInputEventsPerSecond, config.maxInputBurst), lastInputAt: 0, needsResync: false, alive: true };
+  const state = { id, ws, limiter: new TokenBucket(config.maxInputEventsPerSecond, config.maxInputBurst), lastInputAt: Date.now(), needsResync: false, alive: true };
   clients.set(id, state); metrics.wsConnections += 1;
   if (config.allowMultipleControllers || !controllerId) controllerId = id;
   ws.on('pong', () => { state.alive = true; });
@@ -558,7 +563,7 @@ async function captureSnapshotNow(reason = 'snapshot') {
   snapshot.revision = revision;
   latestSnapshot = snapshot;
   metrics.snapshots += 1;
-  broadcast({ type: 'snapshot', snapshot, reason }, { force: true });
+  broadcast({ type: 'snapshot', snapshot, reason });
 }
 
 function targetScore(candidate, matcher) {
