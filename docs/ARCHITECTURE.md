@@ -81,6 +81,8 @@ The DOM remains native in the browser; only non-DOM islands should use pixels/me
 
 ## QQ NT notes
 
-The default launcher targets Linux QQ NT at `/opt/QQ/qq`, but `QQ_BIN` is configurable. A pre-existing QQ process should be fully exited before launch because Electron single-instance forwarding may otherwise cause the new process (with the debugging flags) to terminate immediately.
+The launcher resolves the native Linux QQ executable before starting the bridge. Explicit `QQ_BIN` has highest priority; otherwise discovery checks running processes, `PATH`, known native install paths, XDG `.desktop` entries, package-manager file lists, and a small set of user application directories. Candidates are canonicalized with `realpath` and de-duplicated before ranking.
+
+A pre-existing QQ process should still be fully exited before launch because Electron single-instance forwarding may otherwise cause the new process (with the debugging flags) to terminate immediately. The launcher checks `/proc/<pid>/exe` against the canonical detected binary and reports the PID/path when this happens.
 
 For systems where QQ exposes multiple renderer targets, set `WEB_BRIDGE_TARGET_MATCH` to a regular expression matching the desired target title or URL.
