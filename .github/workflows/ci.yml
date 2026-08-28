@@ -8,18 +8,26 @@ permissions:
   contents: read
 
 jobs:
-  syntax:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm install --ignore-scripts
-      - run: node --check src/cdp.mjs
-      - run: node --check src/injected.mjs
-      - run: node --check src/host.mjs
-      - run: node --check src/qq-detect.mjs
-      - run: node --check public/client.js
-      - run: bash -n scripts/qq-web-bridge.sh
       - run: npm test
+      - name: Syntax validation
+        run: |
+          node --check src/cdp.mjs
+          node --check src/config.mjs
+          node --check src/auth.mjs
+          node --check src/protocol.mjs
+          node --check src/injected.mjs
+          node --check src/host.mjs
+          node --check src/qq-detect.mjs
+          node --check src/doctor.mjs
+          node --check public/client.js
+          bash -n scripts/qq-web-bridge.sh
+      - run: node src/qq-detect.mjs --help

@@ -2,87 +2,61 @@
 
 ## Trust boundary
 
-`web-bridge` treats the QQ NT process as the authoritative application runtime.
+`web-bridge` treats the QQ NT process as the only authoritative application runtime. QQ renderer JavaScript, preload bridges, Electron IPC, credentials, native modules and filesystem access remain on the host.
 
-The browser never receives or executes QQ's renderer bundles, preload code, Electron IPC objects, cookies, local filesystem paths, native modules, or arbitrary CDP access.
+The web client is intentionally a presentation terminal. It receives sanitized DOM/style/state structures and opaque resource endpoints, but never QQ's executable renderer bundle or an arbitrary remote-evaluation channel.
+
+## Runtime path
 
 ```text
-untrusted / remote browser
-        │
-        │ typed bridge protocol
-        ▼
-web-bridge host process
-        │
-        │ allow-listed CDP methods
-        ▼
-QQ NT Chromium renderer
-        │
-        ├─ QQ renderer JavaScript
-        ├─ preload / IPC
-        └─ Electron main / native operations
+Browser DOM
+   |  revisioned patches / typed input RPC
+   v
+web-bridge host
+   |  allow-listed CDP
+   v
+QQ Chromium renderer
+   |  original event handlers / preload IPC
+   v
+Electron Main / host resources
 ```
 
-## DOM transport
+## DOM capture
 
-The host installs a small inspector helper into the renderer through CDP `Runtime.evaluate` and `Page.addScriptToEvaluateOnNewDocument`. It does not modify QQ's packaged files.
+The host installs `src/injected.mjs` through `Page.addScriptToEvaluateOnNewDocument` and `Runtime.evaluate`; QQ package files are unchanged. The helper assigns stable numeric IDs to live nodes, sanitizes attributes, computes the CSS properties required for layout/visual fidelity, records control/media state and observes document plus discovered Shadow Roots.
 
-The helper:
+Initial connection uses a full snapshot. Mutation records are collapsed into bounded local patch sets instead of serializing the whole document after every update. Child-list changes replace only the affected child subtree; text, attribute/style/state and viewport changes use narrower patches. Patch overflow falls back to a full integrity snapshot.
 
-1. Gives DOM nodes host-local numeric identities.
-2. Serializes visible application structure, selected computed CSS properties and control state.
-3. Removes executable/active content (`script`, inline event handlers, `srcdoc`, embedded frames/objects).
-4. Redacts password values.
-5. Signals the host when a `MutationObserver`, input, change, scroll or resize event makes the mirror dirty.
+A periodic snapshot protects against unobservable state such as newly-created closed Shadow Roots or unusual custom rendering behavior.
 
-The PoC currently sends a throttled full sanitized tree after a dirty signal. This is deliberately simple and gives us a correctness baseline. A later transport should retain the same node IDs but encode structural patches (`insert`, `remove`, `attr`, `text`, `state`, `style`) instead.
+## Revisions and recovery
 
-## Input transport
+The host owns a monotonic revision number. A patch contains `baseRevision` and `revision`. A browser refuses a patch whose base does not match its local revision and asks for resynchronization.
 
-Client messages are a fixed allow-list:
+WebSocket send backpressure is monitored per client. A slow client is dropped from the live patch stream and receives `resyncRequired` after its send buffer recovers. This prevents one browser from causing unbounded host memory growth.
 
-- `focus`
-- `pointer`
-- `click`
-- `wheel`
-- `key`
-- `text`
+## Input path
 
-The client cannot submit a CDP method name or JavaScript expression.
+The browser can request only normalized operations: focus, pointer, click, wheel, key, text, select, file commit, resync and control-lease operations. It cannot choose CDP methods or JavaScript expressions.
 
-For pointer operations, the host resolves the client node ID inside the QQ renderer, obtains the element's current `getBoundingClientRect()`, maps normalized client coordinates into the host element, and calls Chromium `Input.dispatchMouseEvent`.
+Pointer coordinates are represented relative to a mirrored node. The host resolves that node against the real QQ DOM and uses its current bounding rectangle before `Input.dispatchMouseEvent`. Keyboard/text events use `Input.dispatchKeyEvent` and `Input.insertText`, so QQ's original React/Vue listeners and IPC execute on the host.
 
-Keyboard input uses `Input.dispatchKeyEvent`; IME/paste text uses `Input.insertText`. Therefore QQ's own React/Vue handlers, DOM event listeners and Electron IPC chain execute on the host.
+Hover-sensitive nodes are explicitly marked after host pointer movement so computed `:hover` visuals can be patched back to the browser even though hover itself is not a DOM mutation.
 
-## Resource relay
+## Resources
 
-Arbitrary `GET /resource?url=...` style proxying is intentionally not provided.
+URLs discovered in DOM attributes, computed CSS and `@font-face` rules are replaced by random per-process tokens. The original URL remains only in host memory. A client can request only a token already discovered from QQ.
 
-When the host creates a snapshot it discovers resource URLs already referenced by QQ, registers each one under a random opaque token, rewrites the browser-facing DOM/CSS to `/resource/<token>`, and stores the original URL only on the host.
+Resources are loaded from Chromium's resource tree when available, then from a credentialed renderer-side fetch fallback. Response and cache sizes are bounded. Cached resources support HTTP byte ranges for media playback.
 
-A resource request is served by:
+## Files
 
-1. `Page.getResourceTree` + `Page.getResourceContent` when Chromium already knows the loaded resource.
-2. A credentialed `fetch()` inside the QQ renderer as a fallback for blob/custom-protocol-compatible resources.
+A client-side HTML file selection is streamed to a private temporary directory on the host. The host validates an opaque upload token and uses the real file-input remote object with `DOM.setFileInputFiles`. The resulting QQ input/change path remains in the host renderer. Temporary files expire automatically and are removed during shutdown.
 
-This prevents a remote browser from turning the bridge into a generic host-side URL fetcher.
+## Multi-client control
 
-## Surfaces that are not DOM
+Multiple clients may observe the same mirror. By default only one client has the controller lease; other clients are read-only. The lease can move after an idle timeout or explicit release. Concurrent controllers require the explicit `WEB_BRIDGE_MULTI_CONTROL=1` override.
 
-`canvas` is currently represented as an element-local PNG snapshot. This preserves QQ QR codes and simple canvas content without pixel-streaming the whole application.
+## Deployment boundary
 
-The intended next layer is per-element surface transport:
-
-- canvas with frequent changes: WebCodecs/WebRTC region stream
-- WebGL: captured region stream
-- video: media/region stream
-- Electron native menus/dialogs: explicit bridge adapters or temporary region fallback
-
-The DOM remains native in the browser; only non-DOM islands should use pixels/media.
-
-## QQ NT notes
-
-The launcher resolves the native Linux QQ executable before starting the bridge. Explicit `QQ_BIN` has highest priority; otherwise discovery checks running processes, `PATH`, known native install paths, XDG `.desktop` entries, package-manager file lists, and a small set of user application directories. Candidates are canonicalized with `realpath` and de-duplicated before ranking.
-
-A pre-existing QQ process should still be fully exited before launch because Electron single-instance forwarding may otherwise cause the new process (with the debugging flags) to terminate immediately. The launcher checks `/proc/<pid>/exe` against the canonical detected binary and reports the PID/path when this happens.
-
-For systems where QQ exposes multiple renderer targets, set `WEB_BRIDGE_TARGET_MATCH` to a regular expression matching the desired target title or URL.
+The HTTP/WebSocket layer can use built-in Basic/Bearer authentication. Non-loopback HTTP binding without authentication is rejected by default. CDP has a separate, stricter rule: it must remain loopback-only unless an explicit dangerous override is supplied.

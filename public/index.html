@@ -3,13 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow,noarchive">
   <title>QQ NT Web Bridge</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header id="statusbar">
-    <span class="dot"></span>
+    <span class="dot" aria-hidden="true"></span>
     <span id="status">正在连接宿主 QQ NT…</span>
+    <div id="actions">
+      <button id="take-control" type="button">接管控制</button>
+      <button id="resync" type="button">重新同步</button>
+    </div>
     <span id="meta"></span>
   </header>
   <main id="viewport">

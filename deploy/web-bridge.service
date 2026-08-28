@@ -1,0 +1,23 @@
+[Unit]
+Description=QQ NT Web Bridge
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/web-bridge
+EnvironmentFile=-%h/.config/web-bridge/env
+ExecStart=/usr/bin/env bash -lc 'pnpm dev:qq'
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

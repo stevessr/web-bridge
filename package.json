@@ -1,6 +1,6 @@
 {
   "name": "qqnt-web-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "DOM-reconstruction web bridge for QQ NT and closed-source Electron apps",
@@ -12,7 +12,8 @@
     "start": "node src/host.mjs",
     "dev:qq": "bash scripts/qq-web-bridge.sh",
     "detect:qq": "node src/qq-detect.mjs --all",
-    "test": "node --test"
+    "test": "node --test",
+    "doctor": "node src/doctor.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
