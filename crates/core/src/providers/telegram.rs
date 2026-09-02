@@ -397,7 +397,8 @@ mod tests {
     }
 
     async fn test_handle() -> Arc<TelegramHandle> {
-        let path = std::env::temp_dir().join(format!("web-bridge-telegram-{}.session", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("web-bridge-telegram-{}.session", Uuid::new_v4()));
         let session = Arc::new(SqliteSession::open(&path).await.unwrap());
         let SenderPool {
             runner: _,
@@ -431,8 +432,12 @@ mod tests {
                 .set_status(account, AccountStatus::Online, None)
                 .unwrap();
         }
-        state.telegram.insert(account_a.clone(), test_handle().await);
-        state.telegram.insert(account_b.clone(), test_handle().await);
+        state
+            .telegram
+            .insert(account_a.clone(), test_handle().await);
+        state
+            .telegram
+            .insert(account_b.clone(), test_handle().await);
 
         disconnect(&state, &account_a).await;
 
