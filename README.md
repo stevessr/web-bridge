@@ -87,6 +87,7 @@ A successful startup should contain lines similar to:
 [web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)
 [web-bridge] using Electron webContents.debugger transport; Chromium remote-debugging-port is not required
 [web-bridge] QQ webContents.debugger bridge listening: 127.0.0.1:33677 (...)
+{"level":"info","message":"attached to QQ renderer",...}
 ```
 
 Control this behavior with:
