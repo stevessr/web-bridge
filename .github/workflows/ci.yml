@@ -32,4 +32,6 @@ jobs:
           node --check src/doctor.mjs
           node --check public/client.js
           bash -n scripts/qq-web-bridge.sh
+          bash -n deploy/download-linuxqq.sh
+          bash -n deploy/docker-entrypoint.sh
       - run: node src/qq-detect.mjs --help
