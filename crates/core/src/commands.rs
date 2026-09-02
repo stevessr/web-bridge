@@ -38,16 +38,22 @@ pub async fn execute(
             }
         }
         Command::RemoveAccount { account } => {
+            if state.accounts.get(&account).is_none() {
+                return vec![account_not_found(request_id)];
+            }
             disconnect_provider(state, &account).await;
+            if let Err(error) = purge_provider_data(state, &account).await {
+                return vec![provider_error(
+                    request_id,
+                    "account_data_purge_failed",
+                    error,
+                )];
+            }
             if state.accounts.remove(&account).is_some() {
                 let _ = state.events.send(ServerFrame::AccountRemoved { account });
                 vec![ServerFrame::Ack { request_id }]
             } else {
-                vec![ServerFrame::Error {
-                    request_id: Some(request_id),
-                    code: "account_not_found".into(),
-                    message: "account not found".into(),
-                }]
+                vec![account_not_found(request_id)]
             }
         }
         Command::SetAccountRoute { account, route } => {
@@ -255,6 +261,21 @@ pub async fn disconnect_provider(state: &CoreState, account: &AccountRef) {
     }
 }
 
+async fn purge_provider_data(state: &CoreState, account: &AccountRef) -> anyhow::Result<()> {
+    if account.network == Network::Qq {
+        return Ok(());
+    }
+    let path = state.account_data_dir(account);
+    match tokio::fs::remove_dir_all(&path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(anyhow::anyhow!(
+            "remove provider data {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 fn route_not_local(request_id: uuid::Uuid) -> ServerFrame {
     ServerFrame::Error {
         request_id: Some(request_id),
@@ -271,10 +292,86 @@ fn policy_error(request_id: uuid::Uuid, message: &str) -> ServerFrame {
     }
 }
 
+fn account_not_found(request_id: uuid::Uuid) -> ServerFrame {
+    ServerFrame::Error {
+        request_id: Some(request_id),
+        code: "account_not_found".into(),
+        message: "account not found".into(),
+    }
+}
+
 fn provider_error(request_id: uuid::Uuid, code: &str, error: anyhow::Error) -> ServerFrame {
     ServerFrame::Error {
         request_id: Some(request_id),
         code: code.into(),
         message: format!("{error:#}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{accounts::RuntimeRole, state::CoreConfig};
+    use uuid::Uuid;
+    use web_bridge_protocol::RouteMode;
+
+    #[tokio::test]
+    async fn disconnect_preserves_provider_data_but_remove_purges_it() {
+        for network in [Network::Matrix, Network::Telegram] {
+            let root = std::env::temp_dir().join(format!(
+                "web-bridge-remove-account-{}-{}",
+                match network {
+                    Network::Matrix => "matrix",
+                    Network::Telegram => "telegram",
+                    Network::Qq => unreachable!(),
+                },
+                Uuid::new_v4()
+            ));
+            let state = Arc::new(CoreState::new(
+                RuntimeRole::Client,
+                CoreConfig {
+                    data_dir: root.clone(),
+                    ..CoreConfig::default()
+                },
+            ));
+            let account = AccountRef {
+                network,
+                id: "account-a".into(),
+            };
+            state
+                .accounts
+                .upsert(account.clone(), None, RouteMode::Client)
+                .unwrap();
+            let account_dir = state.account_data_dir(&account);
+            tokio::fs::create_dir_all(&account_dir).await.unwrap();
+            let sentinel = account_dir.join("session-sentinel");
+            tokio::fs::write(&sentinel, b"session").await.unwrap();
+
+            let disconnect = execute(
+                Uuid::new_v4(),
+                Command::DisconnectAccount {
+                    account: account.clone(),
+                },
+                &state,
+            )
+            .await;
+            assert!(matches!(disconnect.as_slice(), [ServerFrame::Ack { .. }]));
+            assert!(sentinel.exists());
+            assert!(state.accounts.get(&account).is_some());
+
+            let remove = execute(
+                Uuid::new_v4(),
+                Command::RemoveAccount {
+                    account: account.clone(),
+                },
+                &state,
+            )
+            .await;
+            assert!(matches!(remove.as_slice(), [ServerFrame::Ack { .. }]));
+            assert!(!account_dir.exists());
+            assert!(state.accounts.get(&account).is_none());
+
+            let _ = tokio::fs::remove_dir_all(root).await;
+        }
     }
 }
