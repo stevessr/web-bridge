@@ -25,7 +25,7 @@ const originalMain = ${JSON.stringify(originalMain)};
 const host = process.env.WEB_BRIDGE_CDP_HOST || '127.0.0.1';
 const port = Number(process.env.WEB_BRIDGE_CDP_PORT || 0);
 const token = process.env.WEB_BRIDGE_QQ_SHIM_TOKEN || '';
-const pollMs = Math.max(25, Math.min(5000, Number(process.env.WEB_BRIDGE_SHIM_POLL_MS || 120) || 120));
+const pollMs = Math.max(0, Math.min(10000, Number(process.env.WEB_BRIDGE_SHIM_POLL_MS || 1000) || 0));
 const rendererTimeoutMs = Math.max(1000, Math.min(30000, Number(process.env.WEB_BRIDGE_SHIM_RENDERER_TIMEOUT_MS || 8000) || 8000));
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');
 
@@ -106,6 +106,7 @@ function startElectronBridge() {
     let dirtyPoll = null;
     const scripts = [];
     const bindings = new Set();
+    const bindingMarker = '__WEB_BRIDGE_BINDING__' + Math.random().toString(36).slice(2) + ':';
     const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
 
     const focusTarget = () => {
@@ -120,6 +121,26 @@ function startElectronBridge() {
       if (!target || target.isDestroyed()) return Promise.reject(new Error('no renderer target attached'));
       return withTimeout(target.executeJavaScript(String(source), true), label);
     };
+    const bindingSource = (name) => {
+      const marker = bindingMarker + String(name) + ':';
+      return '(function(){' +
+        'const name=' + JSON.stringify(String(name)) + ';' +
+        'const marker=' + JSON.stringify(marker) + ';' +
+        'const fn=function(payload){try{console.debug(marker+String(payload==null?"":payload));}catch{}};' +
+        'try{Object.defineProperty(globalThis,name,{configurable:true,writable:true,value:fn});}' +
+        'catch{try{globalThis[name]=fn;}catch{}}' +
+        'return typeof globalThis[name]==="function";})()';
+    };
+    const installBinding = async (name) => {
+      if (!target || target.isDestroyed() || !bindings.has(name)) return;
+      await runRenderer(bindingSource(name), 'Runtime.addBinding').catch(() => {});
+    };
+    const installBindings = async () => {
+      for (const name of bindings) {
+        if (!target || target.isDestroyed()) return;
+        await installBinding(name);
+      }
+    };
     const stopDirtyPoll = () => {
       if (!dirtyPoll) return;
       clearInterval(dirtyPoll);
@@ -127,10 +148,10 @@ function startElectronBridge() {
     };
     const startDirtyPoll = () => {
       stopDirtyPoll();
-      if (!bindings.has('__webBridgeDirty')) return;
+      if (!pollMs || !bindings.has('__webBridgeDirty')) return;
       dirtyPoll = setInterval(() => {
         if (!target || target.isDestroyed() || socket.destroyed) return;
-        send({ method: 'Runtime.bindingCalled', params: { name: '__webBridgeDirty', payload: 'poll', executionContextId: 0 } });
+        send({ method: 'Runtime.bindingCalled', params: { name: '__webBridgeDirty', payload: 'safety-poll', executionContextId: 0 } });
       }, pollMs);
       dirtyPoll.unref?.();
     };
@@ -141,7 +162,25 @@ function startElectronBridge() {
         await runRenderer(source, 'new-document script').catch(() => {});
       }
     };
-    const onDomReady = () => { installScripts().catch(() => {}); };
+    const onDomReady = () => {
+      Promise.resolve()
+        .then(installBindings)
+        .then(installScripts)
+        .catch(() => {});
+    };
+    const onConsoleMessage = (...args) => {
+      let message = '';
+      if (typeof args[0]?.message === 'string') message = args[0].message;
+      else if (typeof args[1]?.message === 'string') message = args[1].message;
+      else if (typeof args[2] === 'string') message = args[2];
+      if (!message.startsWith(bindingMarker)) return;
+      const body = message.slice(bindingMarker.length);
+      const split = body.indexOf(':');
+      if (split <= 0) return;
+      const name = body.slice(0, split);
+      if (!bindings.has(name)) return;
+      send({ method: 'Runtime.bindingCalled', params: { name, payload: body.slice(split + 1), executionContextId: 0 } });
+    };
     const onDidStartNavigation = (...args) => {
       const details = args[0]?.isMainFrame !== undefined ? args[0] : null;
       const legacyIsMainFrame = args[3];
@@ -167,6 +206,7 @@ function startElectronBridge() {
       target = null;
       if (!current || current.isDestroyed()) return;
       try { current.removeListener('dom-ready', onDomReady); } catch {}
+      try { current.removeListener('console-message', onConsoleMessage); } catch {}
       try { current.removeListener('did-start-navigation', onDidStartNavigation); } catch {}
       try { current.removeListener('did-navigate', onDidNavigate); } catch {}
       try { current.removeListener('did-navigate-in-page', onDidNavigateInPage); } catch {}
@@ -251,6 +291,7 @@ function startElectronBridge() {
         const name = String(params?.name || '');
         if (!name) throw new Error('binding name is required');
         bindings.add(name);
+        await installBinding(name);
         startDirtyPoll();
         return {};
       }
@@ -288,13 +329,14 @@ function startElectronBridge() {
         }
         target = selected.wc;
         target.on('dom-ready', onDomReady);
+        target.on('console-message', onConsoleMessage);
         target.on('did-start-navigation', onDidStartNavigation);
         target.on('did-navigate', onDidNavigate);
         target.on('did-navigate-in-page', onDidNavigateInPage);
         target.on('render-process-gone', onGone);
         target.on('destroyed', onDestroyed);
         startDirtyPoll();
-        send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target), mode: 'electron-hybrid' } });
+        send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target), mode: 'electron-hybrid-push' } });
         return;
       }
       if (message?.method) {
@@ -325,7 +367,7 @@ function startElectronBridge() {
     socket.on('error', cleanup);
   });
   server.on('error', (error) => process.stderr.write('[web-bridge] QQ Electron bridge server error: ' + (error?.stack || error) + '\n'));
-  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ Electron hybrid bridge listening: ' + host + ':' + port + ' (resourcesPath=' + process.resourcesPath + ')\n'));
+  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ Electron hybrid bridge listening: ' + host + ':' + port + ' (push-sync, resourcesPath=' + process.resourcesPath + ')\n'));
   app.once('before-quit', () => { try { server.close(); } catch {} });
 }
 
