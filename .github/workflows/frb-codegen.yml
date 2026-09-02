@@ -36,11 +36,11 @@ jobs:
       - name: Resolve Flutter dependencies
         working-directory: client
         run: flutter pub get
+      - name: Lock Rust dependencies
+        run: cargo generate-lockfile
       - name: Generate bindings
         working-directory: client
         run: flutter_rust_bridge_codegen generate --config-file flutter_rust_bridge.yaml
-      - name: Lock Rust dependencies
-        run: cargo generate-lockfile
       - name: Format Rust
         run: cargo fmt --all
       - name: Commit generated bindings
