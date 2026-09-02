@@ -31,7 +31,7 @@ The client never receives QQ script bundles, preload objects, arbitrary CDP acce
 
 - automatic Linux QQ NT executable discovery, preferring the packaged Electron host over launcher wrappers
 - random loopback-only CDP port by default
-- Linux QQ main-entry CDP injection through a temporary Bubblewrap mount overlay when available
+- Linux QQ main-entry CDP injection through an ephemeral shadow Electron distribution
 - automatic target attach and reconnect
 - sanitized initial DOM snapshot
 - **revisioned incremental DOM/state/style patches**
@@ -54,7 +54,7 @@ The client never receives QQ script bundles, preload objects, arbitrary CDP acce
 
 ## Quick start
 
-Requirements: Linux QQ NT, Node.js 22+, pnpm. `bubblewrap`/`bwrap` is strongly recommended for current Linux QQ builds.
+Requirements: Linux QQ NT, Node.js 22+, pnpm.
 
 ```bash
 pnpm install
@@ -66,25 +66,29 @@ The launcher discovers QQ automatically and prints the local browser endpoint. I
 
 Current Linux QQ builds such as `3.2.33-52892` can reject Electron's `--inspect-brk` flags and may also fail to open the DevTools HTTP endpoint when `--remote-debugging-port` is supplied only on the packaged executable command line. Electron's supported application-side mechanism is `app.commandLine.appendSwitch(...)` before the application becomes ready.
 
-On Linux, `pnpm dev:qq` therefore prefers a **temporary main-entry overlay** when `bwrap` is available:
+`pnpm dev:qq` therefore prefers an **ephemeral shadow Electron distribution**:
 
 1. read `/opt/QQ/resources/app/package.json` and remember its original `main` entry;
-2. create a private temporary package copy and a tiny loader in the user's runtime/temp directory;
-3. start QQ in a Bubblewrap mount namespace whose only intentional filesystem override is the package copy;
-4. the loader calls `app.commandLine.appendSwitch('remote-debugging-address', ...)` and `app.commandLine.appendSwitch('remote-debugging-port', ...)` before loading QQ's original main entry;
-5. the real `/opt/QQ/resources/app/package.json` is **never written or modified**.
+2. copy only the QQ executable into a private user cache directory;
+3. symlink the rest of the installed QQ distribution/resources into that temporary directory;
+4. replace only the shadow copy of `resources/app/package.json` with a package that enters a tiny bridge loader;
+5. the loader calls `app.commandLine.appendSwitch('remote-debugging-address', ...)` and `app.commandLine.appendSwitch('remote-debugging-port', ...)` before loading QQ's original main entry;
+6. the real `/opt/QQ` tree is **never written or modified**.
 
-A successful startup should contain a line similar to:
+Electron derives `process.resourcesPath` from the real executable path. Using a real temporary executable copy is therefore enough to make Electron select the shadow `resources` directory. This avoids Bubblewrap entirely: no nested user namespace, no `/dev/null` breakage, and Chromium keeps its normal Linux zygote/renderer sandbox.
+
+A successful startup should contain lines similar to:
 
 ```text
-[web-bridge] prepared temporary QQ main-entry overlay (host package.json is not modified)
-[web-bridge] QQ main shim injected Chromium CDP switches: 127.0.0.1:33677
+[web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)
+[web-bridge] shadow executable: ~/.cache/web-bridge/qq-shadow.xxxxxx/qq
+[web-bridge] QQ main shim injected Chromium CDP switches: 127.0.0.1:33677 (resourcesPath=.../qq-shadow.xxxxxx/resources)
 ```
 
 Control this behavior with:
 
 ```bash
-WEB_BRIDGE_QQ_MAIN_SHIM=auto pnpm dev:qq   # default: use it when bwrap works
+WEB_BRIDGE_QQ_MAIN_SHIM=auto pnpm dev:qq   # default: use the shadow launcher when supported
 WEB_BRIDGE_QQ_MAIN_SHIM=1 pnpm dev:qq      # require it; fail instead of silently falling back
 WEB_BRIDGE_QQ_MAIN_SHIM=0 pnpm dev:qq      # disable it; argv-only CDP launch
 ```
@@ -149,7 +153,8 @@ The browser applies a patch only if `baseRevision` equals its current revision. 
 - file uploads use private temporary directories with size/TTL limits.
 - only one browser controls QQ by default; other sessions are read-only.
 - CDP is treated as a privileged internal interface and is loopback-only by default.
-- the Linux main-entry shim is user-owned, short-lived, and visible to QQ only inside its temporary mount namespace; `/opt/QQ` is not modified.
+- the Linux main-entry shim and shadow executable are user-owned, short-lived, and deleted when the launcher exits; `/opt/QQ` is not modified.
+- the shadow launcher does not disable Chromium's normal renderer sandbox.
 - the experimental Electron Node inspector path is disabled by default.
 
 ## Operational endpoints
@@ -164,7 +169,7 @@ GET /metrics   Prometheus metrics (authenticated by default)
 
 DOM-native QQ UI is the primary target. Canvas currently uses element-local image snapshots. High-frequency WebGL surfaces and Electron/OS-native dialogs are not reconstructed as DOM. HTML file inputs are bridged, but an app that exclusively invokes `dialog.showOpenDialog()` from Electron Main may still need a native-dialog adapter.
 
-The Bubblewrap main-entry overlay requires an environment where `bwrap` can create a mount namespace. If it is unavailable, `auto` mode falls back to executable command-line switches and prints a diagnostic; `WEB_BRIDGE_QQ_MAIN_SHIM=1` converts that condition into a hard failure.
+The shadow launcher depends on the packaged Electron layout (`<qq>/resources/app/package.json`) and on Electron deriving `process.resourcesPath` from the copied executable. If that layout changes, `auto` mode falls back to executable command-line switches and prints a diagnostic; `WEB_BRIDGE_QQ_MAIN_SHIM=1` converts the condition into a hard failure.
 
 Those limitations do not weaken the isolation model; they affect fidelity for specific UI paths. See the production acceptance checklist before certifying a QQ build.
 
@@ -181,4 +186,4 @@ node --check public/client.js
 bash -n scripts/qq-web-bridge.sh
 ```
 
-This project does not patch or redistribute QQ NT. The Linux overlay changes QQ's view of one package metadata file only inside a temporary mount namespace and leaves the installed application untouched. You are responsible for complying with QQ's terms and applicable law.
+This project does not patch or redistribute QQ NT. The temporary shadow distribution is created from the user's installed QQ and removed again by the launcher. You are responsible for complying with QQ's terms and applicable law.
