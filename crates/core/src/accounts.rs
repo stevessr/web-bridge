@@ -74,15 +74,8 @@ impl AccountRegistry {
             })?;
 
             for row in rows {
-                let (
-                    network,
-                    account_id,
-                    display_name,
-                    route,
-                    _status,
-                    last_error,
-                    raw_metadata,
-                ) = row?;
+                let (network, account_id, display_name, route, _status, last_error, raw_metadata) =
+                    row?;
                 let Some(network) = parse_network(&network) else {
                     continue;
                 };
@@ -140,10 +133,16 @@ impl AccountRegistry {
     }
 
     pub fn provider_metadata(&self, account: &AccountRef) -> Option<Value> {
-        self.metadata.get(account).map(|entry| entry.value().clone())
+        self.metadata
+            .get(account)
+            .map(|entry| entry.value().clone())
     }
 
-    pub fn set_provider_metadata(&self, account: &AccountRef, metadata: Value) -> Result<(), &'static str> {
+    pub fn set_provider_metadata(
+        &self,
+        account: &AccountRef,
+        metadata: Value,
+    ) -> Result<(), &'static str> {
         if self.get(account).is_none() {
             return Err("account not found");
         }
