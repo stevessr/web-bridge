@@ -1,7 +1,6 @@
 # Rust
 /target/
 **/target/
-Cargo.lock
 
 # Flutter
 client/.dart_tool/
@@ -9,7 +8,6 @@ client/.flutter-plugins
 client/.flutter-plugins-dependencies
 client/build/
 client/.packages
-client/pubspec.lock
 
 # IDE / local
 .idea/
