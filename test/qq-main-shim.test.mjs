@@ -14,7 +14,7 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
   assert.equal(original.main, './application/app_launcher/index.js');
 });
 
-test('loader bypasses QQ DevTools Runtime and pushes dirty signals through webContents console events', () => {
+test('loader bypasses QQ DevTools Runtime, pushes dirty signals, and preserves host focus', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
   assert.doesNotThrow(() => new Function(source));
   assert.match(source, /webContents\.getAllWebContents\(\)/);
@@ -22,8 +22,15 @@ test('loader bypasses QQ DevTools Runtime and pushes dirty signals through webCo
   assert.match(source, /target\.executeJavaScript/);
   assert.match(source, /target\.sendInputEvent/);
   assert.match(source, /target\.insertText/);
-  assert.match(source, /target\.focus/);
-  assert.match(source, /owner\.focus/);
+  assert.match(source, /getOwnerBrowserWindow/);
+  assert.match(source, /isFocused/);
+  assert.match(source, /document\.elementFromPoint/);
+  assert.match(source, /document\.activeElement/);
+  assert.match(source, /setRangeText/);
+  assert.match(source, /background-dom/);
+  assert.match(source, /focus-preserving/);
+  assert.doesNotMatch(source, /owner\.focus/);
+  assert.doesNotMatch(source, /target\.focus/);
   assert.match(source, /WEB_BRIDGE_SHIM_RENDERER_TIMEOUT_MS/);
   assert.match(source, /withTimeout/);
   assert.match(source, /Runtime\.evaluate/);
@@ -31,7 +38,7 @@ test('loader bypasses QQ DevTools Runtime and pushes dirty signals through webCo
   assert.match(source, /console-message/);
   assert.match(source, /console\.debug\(marker/);
   assert.match(source, /Runtime\.bindingCalled/);
-  assert.match(source, /mode: 'electron-hybrid-push'/);
+  assert.match(source, /mode: 'electron-hybrid-push-focus-preserving'/);
   assert.match(source, /WEB_BRIDGE_SHIM_POLL_MS \|\| 1000/);
   assert.match(source, /QQ Electron hybrid bridge listening/);
   assert.match(source, /send\(\{ id, result: \{ attached: true/);
