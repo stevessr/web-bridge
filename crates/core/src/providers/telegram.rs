@@ -201,8 +201,6 @@ pub async fn send_message(
             .context("resolve Telegram username")?
             .context("Telegram username not found")?;
         peer.to_ref()
-            .await
-            .context("build Telegram peer reference")?
             .context("Telegram peer is missing an access hash")?
     } else {
         bail!("Telegram peer is not cached; use @username or receive/load the dialog first");
@@ -218,7 +216,7 @@ pub async fn send_message(
 
 pub async fn disconnect(state: &CoreState, account: &AccountRef) {
     if let Some((_, handle)) = state.telegram.remove(account) {
-        handle.client.disconnect();
+        let _ = handle.client.disconnect().await;
         handle.pool_task.abort();
         if let Some(task) = handle.update_task.lock().await.take() {
             task.abort();
@@ -244,10 +242,7 @@ async fn finish_authorized(
         .get_me()
         .await
         .context("read Telegram profile")?;
-    let display_name = user
-        .first_name()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| account.id.clone());
+    let display_name = user.first_name().to_owned();
     let route = state
         .accounts
         .get(&account)
@@ -302,16 +297,14 @@ async fn start_updates(
             match stream.next().await {
                 Ok(Update::NewMessage(message)) => {
                     let conversation_id = message.peer_id().to_string();
-                    if let Ok(Some(peer_ref)) = message.peer_ref().await {
-                        peers.insert(conversation_id.clone(), peer_ref);
-                    }
+                    peers.insert(conversation_id.clone(), message.peer_ref().clone());
                     let kind = match message.peer() {
                         Some(Peer::User(_)) => ConversationKind::Private,
                         Some(Peer::Group(_)) => ConversationKind::Group,
                         Some(Peer::Channel(_)) => ConversationKind::Channel,
                         None => ConversationKind::Private,
                     };
-                    let sender_name = message.sender().and_then(Peer::name).map(ToOwned::to_owned);
+                    let sender_name = message.sender().map(|peer| peer.name().to_owned());
                     let message = UnifiedMessage {
                         id: message.id().to_string(),
                         account: task_account.clone(),
