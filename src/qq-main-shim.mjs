@@ -27,13 +27,32 @@ export function buildLoaderSource(originalMain) {
     `if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');\n` +
     `function targetInfo(wc) {\n` +
     `  if (!wc || wc.isDestroyed()) return null;\n` +
-    `  let kind = '';\n` +
+    `  let kind = ''; let title = ''; let url = ''; let visible = false; let focused = false;\n` +
     `  try { kind = wc.getType?.() || ''; } catch {}\n` +
-    `  if (kind && !['window', 'browserView', 'webview', 'offscreen'].includes(kind)) return null;\n` +
-    `  let title = ''; let url = '';\n` +
+    `  if (kind === 'devTools') return null;\n` +
     `  try { title = wc.getTitle?.() || ''; } catch {}\n` +
     `  try { url = wc.getURL?.() || ''; } catch {}\n` +
-    `  return { id: String(wc.id), type: 'page', title: title || 'QQ NT', url };\n` +
+    `  try { const owner = wc.getOwnerBrowserWindow?.(); visible = Boolean(owner?.isVisible?.()); focused = Boolean(owner?.isFocused?.()); } catch {}\n` +
+    `  return { id: String(wc.id), type: 'page', title: title || 'QQ NT', url, kind, visible, focused };\n` +
+    `}\n` +
+    `function targetRank(info) {\n` +
+    `  let score = 0;\n` +
+    `  if (info?.visible) score += 1000;\n` +
+    `  if (info?.focused) score += 500;\n` +
+    `  if (info?.kind === 'window') score += 250;\n` +
+    `  else if (['browserView', 'webview', 'offscreen'].includes(info?.kind)) score += 120;\n` +
+    `  if (info?.url && info.url !== 'about:blank') score += 50;\n` +
+    `  if (/qq|tencent/i.test((info?.title || '') + ' ' + (info?.url || ''))) score += 25;\n` +
+    `  return score;\n` +
+    `}\n` +
+    `function debuggerCandidates(requestedId = '') {\n` +
+    `  const candidates = webContents.getAllWebContents().map((wc) => ({ wc, info: targetInfo(wc) })).filter((item) => item.info);\n` +
+    `  candidates.sort((a, b) => targetRank(b.info) - targetRank(a.info));\n` +
+    `  if (requestedId) {\n` +
+    `    const index = candidates.findIndex((item) => item.info.id === String(requestedId));\n` +
+    `    if (index > 0) candidates.unshift(candidates.splice(index, 1)[0]);\n` +
+    `  }\n` +
+    `  return candidates;\n` +
     `}\n` +
     `function startDebuggerBridge() {\n` +
     `  const server = net.createServer((socket) => {\n` +
@@ -62,28 +81,50 @@ export function buildLoaderSource(originalMain) {
     `      }\n` +
     `      target = null; ownsDebugger = false;\n` +
     `    };\n` +
+    `    async function tryAttachCandidate(wc) {\n` +
+    `      if (!wc || wc.isDestroyed()) throw new Error('renderer target no longer exists');\n` +
+    `      let owns = false;\n` +
+    `      try {\n` +
+    `        if (!wc.debugger.isAttached()) {\n` +
+    `          try { wc.debugger.attach('1.3'); } catch (versionError) {\n` +
+    `            if (!wc.debugger.isAttached()) wc.debugger.attach();\n` +
+    `          }\n` +
+    `          owns = true;\n` +
+    `        }\n` +
+    `        await wc.debugger.sendCommand('Runtime.enable');\n` +
+    `        await wc.debugger.sendCommand('Page.enable');\n` +
+    `        return { wc, owns };\n` +
+    `      } catch (error) {\n` +
+    `        if (owns) { try { if (wc.debugger.isAttached()) wc.debugger.detach(); } catch {} }\n` +
+    `        throw error;\n` +
+    `      }\n` +
+    `    }\n` +
     `    async function handle(message) {\n` +
     `      const id = message && message.id;\n` +
     `      if (token && message?.token !== token) { send({ id, error: { code: -32001, message: 'unauthorized shim debugger client' } }); return; }\n` +
     `      if (message?.op === 'list') {\n` +
-    `        const targets = webContents.getAllWebContents().map(targetInfo).filter(Boolean);\n` +
+    `        const targets = debuggerCandidates().map((item) => item.info);\n` +
     `        send({ id, result: targets });\n` +
     `        return;\n` +
     `      }\n` +
     `      if (message?.op === 'attach') {\n` +
     `        cleanup(); cleaned = false;\n` +
-    `        const wc = webContents.fromId(Number(message.targetId));\n` +
-    `        if (!wc || wc.isDestroyed()) { send({ id, error: { code: -32002, message: 'renderer target no longer exists' } }); return; }\n` +
-    `        target = wc;\n` +
-    `        try {\n` +
-    `          if (!target.debugger.isAttached()) { target.debugger.attach('1.3'); ownsDebugger = true; }\n` +
-    `          target.debugger.on('message', onDebuggerMessage);\n` +
-    `          target.debugger.on('detach', onDebuggerDetach);\n` +
-    `          send({ id, result: { attached: true, targetId: String(target.id) } });\n` +
-    `        } catch (error) {\n` +
-    `          target = null; ownsDebugger = false;\n` +
-    `          send({ id, error: { code: -32003, message: error?.message || String(error) } });\n` +
+    `        const candidates = debuggerCandidates(message.targetId);\n` +
+    `        let lastError = null;\n` +
+    `        for (const candidate of candidates) {\n` +
+    `          try {\n` +
+    `            const attached = await tryAttachCandidate(candidate.wc);\n` +
+    `            target = attached.wc; ownsDebugger = attached.owns;\n` +
+    `            target.debugger.on('message', onDebuggerMessage);\n` +
+    `            target.debugger.on('detach', onDebuggerDetach);\n` +
+    `            send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target) } });\n` +
+    `            return;\n` +
+    `          } catch (error) {\n` +
+    `            lastError = error;\n` +
+    `          }\n` +
     `        }\n` +
+    `        const summary = candidates.map((item) => item.info.kind + ':' + item.info.id + ':' + (item.info.url || '<empty>')).join(', ');\n` +
+    `        send({ id, error: { code: -32003, message: 'no usable renderer debugger target' + (lastError ? ': ' + (lastError.message || lastError) : '') + (summary ? ' [' + summary + ']' : ' [no webContents]') } });\n` +
     `        return;\n` +
     `      }\n` +
     `      if (message?.method) {\n` +
