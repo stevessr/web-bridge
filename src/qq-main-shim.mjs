@@ -45,8 +45,8 @@ export async function prepareMainShim({ packagePath, outputDir }) {
   await mkdir(absoluteOutput, { recursive: true, mode: 0o700 });
   const loaderPath = join(absoluteOutput, '.web-bridge-main-shim.cjs');
   const packageOutputPath = join(absoluteOutput, 'package.json');
-  const loaderEntry = relative(absoluteOutput, loaderPath) || './.web-bridge-main-shim.cjs';
-  const normalizedLoaderEntry = loaderEntry.startsWith('.') ? loaderEntry : `./${loaderEntry}`;
+  const loaderEntry = relative(absoluteOutput, loaderPath) || '.web-bridge-main-shim.cjs';
+  const normalizedLoaderEntry = loaderEntry.startsWith('./') || loaderEntry.startsWith('../') ? loaderEntry : `./${loaderEntry}`;
   await writeFile(loaderPath, buildLoaderSource(originalMain), { mode: 0o600 });
   await writeFile(packageOutputPath, `${JSON.stringify(buildShimPackage(packageJson, normalizedLoaderEntry), null, 2)}\n`, { mode: 0o600 });
   return { packagePath: packageOutputPath, loaderPath, loaderEntry: normalizedLoaderEntry, originalMain };
