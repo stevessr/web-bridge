@@ -16,6 +16,7 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
 
 test('loader bypasses QQ DevTools Runtime with Electron webContents APIs', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
+  assert.doesNotThrow(() => new Function(source));
   assert.match(source, /webContents\.getAllWebContents\(\)/);
   assert.match(source, /transport: 'electron-webcontents'/);
   assert.match(source, /target\.executeJavaScript/);
