@@ -26,18 +26,18 @@ const host = process.env.WEB_BRIDGE_CDP_HOST || '127.0.0.1';
 const port = Number(process.env.WEB_BRIDGE_CDP_PORT || 0);
 const token = process.env.WEB_BRIDGE_QQ_SHIM_TOKEN || '';
 const pollMs = Math.max(25, Math.min(5000, Number(process.env.WEB_BRIDGE_SHIM_POLL_MS || 120) || 120));
+const rendererTimeoutMs = Math.max(1000, Math.min(30000, Number(process.env.WEB_BRIDGE_SHIM_RENDERER_TIMEOUT_MS || 8000) || 8000));
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');
 
 function targetInfo(wc) {
   if (!wc || wc.isDestroyed()) return null;
-  let kind = ''; let title = ''; let url = ''; let visible = false; let focused = false; let debuggerAttached = false;
+  let kind = ''; let title = ''; let url = ''; let visible = false; let focused = false;
   try { kind = wc.getType?.() || ''; } catch {}
   if (kind === 'devTools') return null;
   try { title = wc.getTitle?.() || ''; } catch {}
   try { url = wc.getURL?.() || ''; } catch {}
   try { const owner = wc.getOwnerBrowserWindow?.(); visible = Boolean(owner?.isVisible?.()); focused = Boolean(owner?.isFocused?.()); } catch {}
-  try { debuggerAttached = Boolean(wc.debugger?.isAttached?.()); } catch {}
-  return { id: String(wc.id), type: 'page', title: title || url || 'QQ NT', url, kind, visible, focused, debuggerAttached, transport: 'electron-webcontents' };
+  return { id: String(wc.id), type: 'page', title: title || url || 'QQ NT', url, kind, visible, focused, transport: 'electron-webcontents' };
 }
 
 function targetRank(info) {
@@ -85,6 +85,17 @@ function runtimeResult(value) {
   return { result: { type, value } };
 }
 
+function withTimeout(promise, label, timeoutMs = rendererTimeoutMs) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(label + ' timed out after ' + timeoutMs + 'ms'), { code: -32006 })), timeoutMs);
+      timer.unref?.();
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
 function startElectronBridge() {
   const server = net.createServer((socket) => {
     socket.setNoDelay(true);
@@ -97,6 +108,18 @@ function startElectronBridge() {
     const bindings = new Set();
     const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
 
+    const focusTarget = () => {
+      if (!target || target.isDestroyed()) return;
+      try {
+        const owner = target.getOwnerBrowserWindow?.();
+        if (owner?.isVisible?.()) owner.focus?.();
+      } catch {}
+      try { target.focus?.(); } catch {}
+    };
+    const runRenderer = (source, label = 'renderer JavaScript') => {
+      if (!target || target.isDestroyed()) return Promise.reject(new Error('no renderer target attached'));
+      return withTimeout(target.executeJavaScript(String(source), true), label);
+    };
     const stopDirtyPoll = () => {
       if (!dirtyPoll) return;
       clearInterval(dirtyPoll);
@@ -115,12 +138,14 @@ function startElectronBridge() {
       if (!target || target.isDestroyed()) return;
       for (const source of scripts) {
         if (!target || target.isDestroyed()) return;
-        await target.executeJavaScript(source, true).catch(() => {});
+        await runRenderer(source, 'new-document script').catch(() => {});
       }
     };
     const onDomReady = () => { installScripts().catch(() => {}); };
-    const onDidStartNavigation = (_event, _url, _inPlace, isMainFrame) => {
-      if (isMainFrame === false) return;
+    const onDidStartNavigation = (...args) => {
+      const details = args[0]?.isMainFrame !== undefined ? args[0] : null;
+      const legacyIsMainFrame = args[3];
+      if (details ? details.isMainFrame === false : legacyIsMainFrame === false) return;
       send({ method: 'Runtime.executionContextsCleared', params: {} });
     };
     const onDidNavigate = (_event, url) => {
@@ -161,7 +186,7 @@ function startElectronBridge() {
         if (match) return { result: { type: 'object', subtype: 'node', objectId: 'wb-node:' + match[1] } };
         throw new Error('hybrid bridge only supports object handles for __WEB_BRIDGE__.objectFor()');
       }
-      const value = await target.executeJavaScript(expression, true);
+      const value = await runRenderer(expression, 'Runtime.evaluate');
       return runtimeResult(value);
     }
 
@@ -182,7 +207,7 @@ function startElectronBridge() {
         'for(const item of items){const binary=atob(item.base64);const bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);dt.items.add(new File([bytes],item.name,{type:"application/octet-stream"}));}' +
         'node.files=dt.files;node.dispatchEvent(new Event("input",{bubbles:true}));node.dispatchEvent(new Event("change",{bubbles:true}));' +
         'globalThis.__WEB_BRIDGE__?.markVisual(' + nodeId + ');return {count:dt.files.length};})()';
-      await target.executeJavaScript(source, true);
+      await runRenderer(source, 'DOM.setFileInputFiles');
       return {};
     }
 
@@ -190,6 +215,7 @@ function startElectronBridge() {
       const typeMap = { mouseMoved: 'mouseMove', mousePressed: 'mouseDown', mouseReleased: 'mouseUp', mouseWheel: 'mouseWheel' };
       const type = typeMap[params?.type];
       if (!type) throw new Error('unsupported mouse event type: ' + String(params?.type || ''));
+      focusTarget();
       const event = {
         type,
         x: Math.round(Number(params?.x) || 0),
@@ -213,6 +239,7 @@ function startElectronBridge() {
       const kind = params?.type === 'keyUp' ? 'keyUp' : params?.type === 'char' ? 'char' : 'keyDown';
       const keyCode = String(params?.key || params?.code || '');
       if (!keyCode) throw new Error('keyCode is required');
+      focusTarget();
       target.sendInputEvent({ type: kind, keyCode, modifiers: modifiersFromMask(params?.modifiers), isAutoRepeat: Boolean(params?.autoRepeat) });
       return {};
     }
@@ -236,7 +263,8 @@ function startElectronBridge() {
       if (method === 'Input.dispatchMouseEvent') return dispatchMouse(params || {});
       if (method === 'Input.dispatchKeyEvent') return dispatchKey(params || {});
       if (method === 'Input.insertText') {
-        await Promise.resolve(target.insertText(String(params?.text || '')));
+        focusTarget();
+        await withTimeout(target.insertText(String(params?.text || '')), 'Input.insertText');
         return {};
       }
       if (method === 'DOM.setFileInputFiles') return setFileInputFiles(params || {});
