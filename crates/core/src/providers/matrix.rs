@@ -91,12 +91,19 @@ pub async fn restore_sessions(state: Arc<CoreState>) {
 
     for account in accounts {
         if let Err(error) = restore_account(state.clone(), &account).await {
-            mark_error(&state, &account, &format!("Matrix session restore failed: {error:#}"));
+            mark_error(
+                &state,
+                &account,
+                &format!("Matrix session restore failed: {error:#}"),
+            );
         }
     }
 }
 
-pub async fn restore_account(state: Arc<CoreState>, account: &AccountRef) -> Result<AccountSnapshot> {
+pub async fn restore_account(
+    state: Arc<CoreState>,
+    account: &AccountRef,
+) -> Result<AccountSnapshot> {
     let snapshot = state
         .accounts
         .get(account)
@@ -119,9 +126,9 @@ pub async fn restore_account(state: Arc<CoreState>, account: &AccountRef) -> Res
         .accounts
         .set_status(account, AccountStatus::Connecting, None)
         .context("Matrix account disappeared during restore")?;
-    let _ = state
-        .events
-        .send(ServerFrame::AccountChanged { account: connecting });
+    let _ = state.events.send(ServerFrame::AccountChanged {
+        account: connecting,
+    });
 
     let client = build_client(&state, account, &stored.homeserver).await?;
     client
@@ -287,11 +294,11 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
 }
 
 fn mark_error(state: &CoreState, account: &AccountRef, error: &str) {
-    if let Some(snapshot) = state.accounts.set_status(
-        account,
-        AccountStatus::Error,
-        Some(error.to_owned()),
-    ) {
+    if let Some(snapshot) =
+        state
+            .accounts
+            .set_status(account, AccountStatus::Error, Some(error.to_owned()))
+    {
         let _ = state
             .events
             .send(ServerFrame::AccountChanged { account: snapshot });

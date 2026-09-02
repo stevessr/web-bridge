@@ -331,7 +331,8 @@ mod tests {
 
     #[test]
     fn persistent_registry_restores_accounts_as_offline() {
-        let path = std::env::temp_dir().join(format!("web-bridge-accounts-{}.sqlite", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("web-bridge-accounts-{}.sqlite", Uuid::new_v4()));
         let account = AccountRef {
             network: Network::Matrix,
             id: "matrix-a".into(),
@@ -339,11 +340,7 @@ mod tests {
         {
             let registry = AccountRegistry::open(&path).unwrap();
             registry
-                .upsert(
-                    account.clone(),
-                    Some("Alice".into()),
-                    RouteMode::Client,
-                )
+                .upsert(account.clone(), Some("Alice".into()), RouteMode::Client)
                 .unwrap();
             registry
                 .set_status(&account, AccountStatus::Online, None)
@@ -360,7 +357,8 @@ mod tests {
 
     #[test]
     fn persistent_registry_removal_does_not_return_after_restart() {
-        let path = std::env::temp_dir().join(format!("web-bridge-accounts-{}.sqlite", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("web-bridge-accounts-{}.sqlite", Uuid::new_v4()));
         let account = AccountRef {
             network: Network::Telegram,
             id: "telegram-a".into(),

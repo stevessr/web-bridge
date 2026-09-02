@@ -6,7 +6,7 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_route`, `command_route`, `event_receiver`, `network_name`, `parse_network`, `parse_route`, `runtime`
+// These functions are ignored because they are not marked as `pub`: `account_route`, `command_route`, `ensure_local_sessions_restored`, `event_receiver`, `network_name`, `parse_network`, `parse_route`, `runtime`
 
 int protocolVersion() => RustLib.instance.api.crateApiProtocolVersion();
 
