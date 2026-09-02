@@ -9,6 +9,7 @@ use crate::{
     accounts::{AccountRegistry, RuntimeRole},
     providers::{matrix::MatrixHandle, telegram::TelegramHandle},
     remote::RemoteBridge,
+    storage::MessageStore,
 };
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,7 @@ pub struct CoreState {
     pub config: CoreConfig,
     pub events: broadcast::Sender<ServerFrame>,
     pub accounts: AccountRegistry,
+    pub storage: MessageStore,
     /// QQ account -> reverse OneBot websocket writer.
     pub qq: DashMap<AccountRef, mpsc::UnboundedSender<String>>,
     /// OneBot echo -> command waiting for the actual NapCat action response.
@@ -53,25 +55,37 @@ pub struct CoreState {
 impl CoreState {
     pub fn new(role: RuntimeRole, config: CoreConfig) -> Self {
         let (events, _) = broadcast::channel(4096);
-        let accounts = if cfg!(test) {
-            AccountRegistry::default()
+        let (accounts, storage) = if cfg!(test) {
+            (
+                AccountRegistry::default(),
+                MessageStore::memory().expect("open in-memory message store"),
+            )
         } else {
-            match std::fs::create_dir_all(&config.data_dir)
-                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
-                .and_then(|()| AccountRegistry::open(&config.data_dir.join("accounts.sqlite")))
-            {
+            if let Err(error) = std::fs::create_dir_all(&config.data_dir) {
+                warn!(%error, "failed to create core data directory");
+            }
+            let accounts = match AccountRegistry::open(&config.data_dir.join("accounts.sqlite")) {
                 Ok(registry) => registry,
                 Err(error) => {
                     warn!(%error, "failed to open persistent account registry; using memory only");
                     AccountRegistry::default()
                 }
-            }
+            };
+            let storage = match MessageStore::open(&config.data_dir.join("messages.sqlite")) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    warn!(%error, "failed to open persistent message store; using memory only");
+                    MessageStore::memory().expect("open fallback in-memory message store")
+                }
+            };
+            (accounts, storage)
         };
         Self {
             role,
             config,
             events,
             accounts,
+            storage,
             qq: DashMap::new(),
             qq_pending: DashMap::new(),
             matrix: DashMap::new(),
