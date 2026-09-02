@@ -6,8 +6,10 @@ WEB_HOST="${WEB_BRIDGE_HOST:-127.0.0.1}"
 WEB_PORT="${WEB_BRIDGE_PORT:-8080}"
 # QQ 3.2.33-52892 disables the Node CLI inspector and also ignores the renderer
 # remote-debugging switch when it is supplied only on the packaged executable
-# command line. On Linux, prefer a temporary package.json overlay that runs a
-# tiny main-process shim before QQ's real entry and uses app.commandLine.
+# command line. On Linux, prefer a temporary shadow Electron distribution that
+# runs a tiny main-process shim before QQ's real entry and uses app.commandLine.
+# Unlike the previous bubblewrap overlay, this does not introduce a nested user
+# namespace, so Chromium can keep its normal zygote/renderer sandbox.
 MAIN_SHIM_MODE="${WEB_BRIDGE_QQ_MAIN_SHIM:-auto}"
 # Kept only as an explicit diagnostic path for Electron builds whose
 # nodeCliInspect fuse is enabled.
@@ -104,6 +106,7 @@ launch_qq_direct() {
 
 USE_MAIN_SHIM=0
 SHIM_DIR=""
+SHADOW_QQ_BIN=""
 QQ_APP_PACKAGE="$(dirname "$QQ_BIN")/resources/app/package.json"
 
 main_shim_forced() {
@@ -132,53 +135,48 @@ prepare_main_shim() {
     fi
     return 1
   fi
-  if ! command -v bwrap >/dev/null 2>&1; then
-    if main_shim_forced; then
-      echo "[web-bridge] forced QQ main shim requires bubblewrap (bwrap)" >&2
-      exit 4
-    fi
-    echo "[web-bridge] bubblewrap not found; falling back to executable CDP flags only" >&2
+
+  local shim_base
+  if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    shim_base="$XDG_CACHE_HOME/web-bridge"
+  elif [[ -n "${HOME:-}" ]]; then
+    shim_base="$HOME/.cache/web-bridge"
+  else
+    shim_base="${TMPDIR:-/tmp}/web-bridge"
+  fi
+  mkdir -p "$shim_base"
+  chmod 700 "$shim_base" 2>/dev/null || true
+  SHIM_DIR="$(mktemp -d "$shim_base/qq-shadow.XXXXXX")"
+  SHADOW_QQ_BIN="$SHIM_DIR/$(basename "$QQ_BIN")"
+
+  if ! node src/qq-main-shim.mjs --qq-bin "$QQ_BIN" --output "$SHIM_DIR" >/dev/null; then
+    rm -rf "$SHIM_DIR" >/dev/null 2>&1 || true
+    SHIM_DIR=""
+    SHADOW_QQ_BIN=""
+    if main_shim_forced; then exit 4; fi
+    echo "[web-bridge] could not prepare QQ shadow distribution; falling back to executable CDP flags only" >&2
     return 1
   fi
-  # Probe user-namespace / mount-namespace support before preparing anything.
-  if ! bwrap --bind / / -- true >/dev/null 2>&1; then
-    if main_shim_forced; then
-      echo "[web-bridge] forced QQ main shim: bwrap is installed but cannot create a mount namespace" >&2
-      exit 4
-    fi
-    echo "[web-bridge] bwrap overlay unavailable on this host; falling back to executable CDP flags only" >&2
+  if [[ ! -x "$SHADOW_QQ_BIN" ]]; then
+    echo "[web-bridge] QQ shadow executable was not created: $SHADOW_QQ_BIN" >&2
+    rm -rf "$SHIM_DIR" >/dev/null 2>&1 || true
+    SHIM_DIR=""
+    SHADOW_QQ_BIN=""
+    if main_shim_forced; then exit 4; fi
     return 1
   fi
 
-  local shim_base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-  SHIM_DIR="$(mktemp -d "$shim_base/web-bridge-qq-shim.XXXXXX")"
-  if ! node src/qq-main-shim.mjs --package "$QQ_APP_PACKAGE" --output "$SHIM_DIR" >/dev/null; then
-    rm -rf "$SHIM_DIR" >/dev/null 2>&1 || true
-    SHIM_DIR=""
-    if main_shim_forced; then exit 4; fi
-    echo "[web-bridge] could not prepare QQ main shim; falling back to executable CDP flags only" >&2
-    return 1
-  fi
   USE_MAIN_SHIM=1
-  echo "[web-bridge] prepared temporary QQ main-entry overlay (host package.json is not modified)"
+  echo "[web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)"
+  echo "[web-bridge] shadow executable: $SHADOW_QQ_BIN"
   return 0
 }
 
 launch_qq_main_shim() {
-  # The first bind mirrors the host filesystem into a private mount namespace;
-  # the second masks only QQ's package.json with our temporary copy. The copy's
-  # main points to a user-owned loader under SHIM_DIR, which is visible through
-  # the root bind. QQ and its children inherit the overlay, while /opt is never
-  # changed on the host.
-  bwrap \
-    --die-with-parent \
-    --bind / / \
-    --ro-bind "$SHIM_DIR/package.json" "$QQ_APP_PACKAGE" \
-    -- \
-    "$QQ_BIN" \
-      "--remote-debugging-address=$CDP_HOST" \
-      "--remote-debugging-port=$CDP_PORT" \
-      "$@" &
+  "$SHADOW_QQ_BIN" \
+    "--remote-debugging-address=$CDP_HOST" \
+    "--remote-debugging-port=$CDP_PORT" \
+    "$@" &
   QQ_PID=$!
 }
 
@@ -208,7 +206,7 @@ prepare_main_shim || true
 
 # Experimental inspector path only. Known-current Linux QQ rejects --inspect-brk
 # because its Electron nodeCliInspect fuse is disabled. If explicitly enabled,
-# fall back to the main-entry overlay rather than to argv-only launch.
+# fall back to the shadow main-entry launcher rather than to argv-only launch.
 if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP" != "off" ]]; then
   INSPECTOR_HOST="127.0.0.1"
   INSPECTOR_PORT="$(free_loopback_port)"
@@ -222,7 +220,7 @@ if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP"
     --cdp-host "$CDP_HOST" \
     --cdp-port "$CDP_PORT" \
     --timeout "${WEB_BRIDGE_QQ_BOOTSTRAP_TIMEOUT_MS:-15000}"; then
-    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with main-entry/argv fallback" >&2
+    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with shadow-main/argv fallback" >&2
     kill "$QQ_PID" >/dev/null 2>&1 || true
     wait "$QQ_PID" 2>/dev/null || true
     QQ_PID=""
@@ -249,9 +247,9 @@ try {
 NODE
   then
     if [[ "$USE_MAIN_SHIM" == "1" ]]; then
-      echo "[web-bridge] CDP is still unreachable after startup even with the QQ main-entry shim; look above for 'QQ main shim injected Chromium CDP switches'" >&2
+      echo "[web-bridge] CDP is still unreachable after startup even with the QQ shadow main shim; look above for 'QQ main shim injected Chromium CDP switches'" >&2
     else
-      echo "[web-bridge] CDP is still unreachable after startup; main-entry shim was not active (install/enable bwrap or set WEB_BRIDGE_QQ_MAIN_SHIM=1 for a hard failure)" >&2
+      echo "[web-bridge] CDP is still unreachable after startup; main-entry shim was not active (set WEB_BRIDGE_QQ_MAIN_SHIM=1 for a hard failure)" >&2
     fi
   fi
 ) &
