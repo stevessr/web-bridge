@@ -4,7 +4,10 @@ set -euo pipefail
 CDP_HOST="${WEB_BRIDGE_CDP_HOST:-127.0.0.1}"
 WEB_HOST="${WEB_BRIDGE_HOST:-127.0.0.1}"
 WEB_PORT="${WEB_BRIDGE_PORT:-8080}"
-CDP_BOOTSTRAP="${WEB_BRIDGE_QQ_CDP_BOOTSTRAP:-1}"
+# Production QQ builds can disable Electron's Node CLI inspector fuse. Keep the
+# inspector bootstrap available for compatible builds, but never make it the
+# default path.
+CDP_BOOTSTRAP="${WEB_BRIDGE_QQ_CDP_BOOTSTRAP:-0}"
 
 case "$CDP_HOST" in
   127.0.0.1|localhost|::1) ;;
@@ -94,17 +97,27 @@ launch_qq() {
 }
 
 echo "[web-bridge] QQ executable ($QQ_DETECT_SOURCE): $QQ_BIN"
+if [[ "$QQ_BIN" == /opt/QQ/qq || "$QQ_BIN" == /opt/qq/qq ]]; then
+  echo "[web-bridge] using direct packaged Electron host (preferred for Chromium/CDP switches)"
+elif [[ "$QQ_BIN" == */linuxqq ]]; then
+  echo "[web-bridge] warning: selected a linuxqq launcher/wrapper; if CDP does not open, try QQ_BIN=/opt/QQ/qq" >&2
+fi
 echo "[web-bridge] private CDP endpoint: $CDP_HOST:$CDP_PORT"
 
-# Recent QQ NT builds can accept ordinary Chromium switches while still failing
-# to bring up the renderer DevTools HTTP endpoint from --remote-debugging-port.
-# Electron officially supports setting this switch through app.commandLine before
-# the ready event. Use a short-lived, random loopback Node inspector to do exactly
-# that before QQ's main script starts, then close the inspector after resuming.
+# Bring the browser endpoint up before QQ finishes booting. The host already has
+# a reconnecting attach loop, so the Web UI can show meaningful waiting/syncing
+# state during QQ startup rather than appearing late.
+node src/host.mjs &
+BRIDGE_PID=$!
+echo "[web-bridge] browser endpoint: http://$WEB_HOST:$WEB_PORT"
+
+# Experimental compatibility path only. QQ 3.2.33-52892 is known to reject
+# --inspect-brk when its Electron nodeCliInspect fuse is disabled, so ordinary
+# Chromium remote debugging on the direct /opt/QQ/qq host is the default.
 if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP" != "off" ]]; then
   INSPECTOR_HOST="127.0.0.1"
   INSPECTOR_PORT="$(free_loopback_port)"
-  echo "[web-bridge] bootstrapping QQ CDP through temporary Electron inspector: $INSPECTOR_HOST:$INSPECTOR_PORT"
+  echo "[web-bridge] experimental Electron inspector bootstrap enabled: $INSPECTOR_HOST:$INSPECTOR_PORT"
   launch_qq "--inspect-brk=$INSPECTOR_HOST:$INSPECTOR_PORT" "$@"
   echo "[web-bridge] QQ PID: $QQ_PID"
 
@@ -127,10 +140,6 @@ else
   echo "[web-bridge] QQ PID: $QQ_PID"
 fi
 
-echo "[web-bridge] browser endpoint: http://$WEB_HOST:$WEB_PORT"
-
-node src/host.mjs &
-BRIDGE_PID=$!
 set +e
 wait -n "$QQ_PID" "$BRIDGE_PID"
 STATUS=$?
