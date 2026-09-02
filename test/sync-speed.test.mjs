@@ -16,9 +16,9 @@ function withoutEnv(names, fn) {
   }
 }
 
-test('push sync uses frame-paced patch coalescing and only slow safety polling', () => {
+test('push sync uses low-latency patch coalescing and only slow safety polling', () => {
   const config = withoutEnv(['WEB_BRIDGE_PATCH_THROTTLE_MS', 'WEB_BRIDGE_SHIM_POLL_MS'], () => loadConfig());
-  assert.equal(config.patchThrottleMs, 16);
+  assert.equal(config.patchThrottleMs, 8);
   assert.equal(config.shimPollMs, 1000);
 });
 

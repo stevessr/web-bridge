@@ -51,7 +51,7 @@ export function loadConfig() {
     reconnectMaxMs: intEnv('WEB_BRIDGE_RECONNECT_MAX_MS', 10_000, { min: 500, max: 120_000 }),
     screenDiscoveryMs: intEnv('WEB_BRIDGE_SCREEN_DISCOVERY_MS', 1000, { min: 250, max: 30_000 }),
     maxScreens: intEnv('WEB_BRIDGE_MAX_SCREENS', 8, { min: 1, max: 64 }),
-    patchThrottleMs: intEnv('WEB_BRIDGE_PATCH_THROTTLE_MS', 16, { min: 8, max: 5000 }),
+    patchThrottleMs: intEnv('WEB_BRIDGE_PATCH_THROTTLE_MS', 8, { min: 8, max: 5000 }),
     shimPollMs: intEnv('WEB_BRIDGE_SHIM_POLL_MS', 1000, { min: 0, max: 10_000 }),
     fullSnapshotIntervalMs: intEnv('WEB_BRIDGE_FULL_SNAPSHOT_INTERVAL_MS', 60_000, { min: 5000, max: 3_600_000 }),
     callTimeoutMs: intEnv('WEB_BRIDGE_CDP_CALL_TIMEOUT_MS', 15_000, { min: 1000, max: 120_000 }),

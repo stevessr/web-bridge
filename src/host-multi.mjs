@@ -488,7 +488,7 @@ async function pruneUploads() {
 }
 
 async function serveStatic(url, res) {
-  const table = { '/': 'index.html', '/index.html': 'index.html', '/client.js': 'client.js', '/style.css': 'style.css', '/screens.css': 'screens.css' };
+  const table = { '/': 'index.html', '/index.html': 'index.html', '/client.js': 'client.js', '/input-fastpath.js': 'input-fastpath.js', '/style.css': 'style.css', '/screens.css': 'screens.css' };
   const filename = table[url.pathname];
   if (!filename) return false;
   const path = join(PUBLIC, filename);
@@ -639,6 +639,20 @@ async function markVisual(session, nodeId) {
   await session.cdp.call('Runtime.evaluate', { expression: `globalThis.__WEB_BRIDGE__?.markVisual(${nodeId})`, returnByValue: true });
 }
 
+async function resizeHostWindow(session, width, height) {
+  if (!session?.cdp) throw new Error('QQ screen is not attached');
+  const current = await session.cdp.call('Browser.getWindowForTarget');
+  const windowId = Number(current?.windowId);
+  if (!Number.isInteger(windowId)) throw new Error('QQ window id is unavailable');
+  const state = String(current?.bounds?.windowState || 'normal');
+  if (state !== 'normal') {
+    await session.cdp.call('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+  }
+  await session.cdp.call('Browser.setWindowBounds', { windowId, bounds: { width, height } });
+  const updated = await session.cdp.call('Browser.getWindowForTarget').catch(() => null);
+  return updated?.bounds || { width, height, windowState: 'normal' };
+}
+
 async function selectScreen(state, screenId) {
   const next = screens.get(screenId);
   if (!next) {
@@ -685,6 +699,15 @@ async function handleClientMessage(state, raw) {
   state.controlActivity.set(session.id, Date.now());
   metrics.inputEvents += 1;
 
+  if (message.type === 'resizeWindow') {
+    const bounds = await resizeHostWindow(session, message.width, message.height);
+    broadcastToScreen(session.id, { type: 'windowBounds', screenId: session.id, bounds });
+    const timer = setTimeout(() => {
+      captureSnapshot(session, 'window-resize').catch((error) => log('warn', 'window resize snapshot failed', { screenId: session.id, error: error.message }));
+    }, 40);
+    timer.unref?.();
+    return;
+  }
   if (message.type === 'focus') return focusNode(session, message.nodeId);
   if (message.type === 'fileCommit') {
     const uploads = message.uploadTokens.map((token) => uploadByToken.get(token)).filter(Boolean);
