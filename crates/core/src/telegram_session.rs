@@ -208,6 +208,12 @@ mod tests {
     use grammers_session::types::{PeerAuth, PeerInfo};
     use uuid::Uuid;
 
+    #[test]
+    fn session_backend_is_sender_pool_safe() {
+        fn assert_traits<T: Session + Send + Sync>() {}
+        assert_traits::<RusqliteSession>();
+    }
+
     #[tokio::test]
     async fn session_survives_reopen_without_libsql() {
         let path = std::env::temp_dir().join(format!(
