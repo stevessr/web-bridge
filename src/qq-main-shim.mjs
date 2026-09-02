@@ -25,6 +25,7 @@ const originalMain = ${JSON.stringify(originalMain)};
 const host = process.env.WEB_BRIDGE_CDP_HOST || '127.0.0.1';
 const port = Number(process.env.WEB_BRIDGE_CDP_PORT || 0);
 const token = process.env.WEB_BRIDGE_QQ_SHIM_TOKEN || '';
+const pollMs = Math.max(25, Math.min(5000, Number(process.env.WEB_BRIDGE_SHIM_POLL_MS || 120) || 120));
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');
 
 function targetInfo(wc) {
@@ -91,10 +92,25 @@ function startElectronBridge() {
     let buffer = '';
     let target = null;
     let cleaned = false;
+    let dirtyPoll = null;
     const scripts = [];
     const bindings = new Set();
     const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
 
+    const stopDirtyPoll = () => {
+      if (!dirtyPoll) return;
+      clearInterval(dirtyPoll);
+      dirtyPoll = null;
+    };
+    const startDirtyPoll = () => {
+      stopDirtyPoll();
+      if (!bindings.has('__webBridgeDirty')) return;
+      dirtyPoll = setInterval(() => {
+        if (!target || target.isDestroyed() || socket.destroyed) return;
+        send({ method: 'Runtime.bindingCalled', params: { name: '__webBridgeDirty', payload: 'poll', executionContextId: 0 } });
+      }, pollMs);
+      dirtyPoll.unref?.();
+    };
     const installBindings = async () => {
       if (!target || target.isDestroyed() || !bindings.size) return;
       const names = JSON.stringify([...bindings]);
@@ -127,6 +143,7 @@ function startElectronBridge() {
     const onDestroyed = () => socket.end();
 
     const cleanupTarget = () => {
+      stopDirtyPoll();
       const current = target;
       target = null;
       if (!current || current.isDestroyed()) return;
@@ -214,6 +231,7 @@ function startElectronBridge() {
         if (!name) throw new Error('binding name is required');
         bindings.add(name);
         await installBindings();
+        startDirtyPoll();
         return {};
       }
       if (method === 'Page.addScriptToEvaluateOnNewDocument') {
@@ -254,6 +272,7 @@ function startElectronBridge() {
         target.on('did-navigate-in-page', onDidNavigateInPage);
         target.on('render-process-gone', onGone);
         target.on('destroyed', onDestroyed);
+        startDirtyPoll();
         send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target), mode: 'electron-hybrid' } });
         return;
       }
