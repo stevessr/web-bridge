@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use web_bridge_protocol::{
-    AccountRef, AccountStatus, Command, Network, ServerFrame,
-};
+use web_bridge_protocol::{AccountRef, AccountStatus, Command, Network, ServerFrame};
 
 use crate::{
     napcat,
