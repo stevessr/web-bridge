@@ -106,6 +106,18 @@ body[data-connected="true"] .dot {
   animation: none;
 }
 
+/* Once a real Screen has rendered, reconnect/sync state is deliberately quiet:
+   preserve the last useful frame and let only the toolbar text/dot communicate
+   that transport is recovering. Avoid a pulsing indicator over active content. */
+body:has(#stage:not(:empty))[data-status="connecting"] .dot,
+body:has(#stage:not(:empty))[data-status="disconnected"] .dot,
+body:has(#stage:not(:empty))[data-status="syncing"] .dot,
+body:has(#stage:not(:empty))[data-status="waiting"] .dot {
+  animation: none;
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(240, 179, 95, .10);
+}
+
 @keyframes status-pulse {
   50% { opacity: .45; transform: scale(.88); }
 }
@@ -232,10 +244,15 @@ body[data-control="granted"] #take-control { color: #bcefcf; background: rgba(10
   padding: 24px;
   pointer-events: auto;
   background: radial-gradient(circle at 50% 32%, rgba(110, 168, 255, .07), transparent 32%);
-  transition: opacity .22s ease, visibility .22s ease;
+  transition: opacity .14s ease, visibility .14s linear;
 }
 
-body[data-connected="true"][data-status="ready"] #connection-panel {
+/* The modal card is a cold-start / empty-Screen affordance only. During a
+   reconnect or resync, keep the last rendered QQ frame visible instead of
+   covering it with an animated card. Explicit Screen switches clear #stage,
+   so they still get the full loading state when there is nothing useful to show. */
+body[data-connected="true"][data-status="ready"] #connection-panel,
+#viewport:has(#stage:not(:empty)) #connection-panel {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
