@@ -62,6 +62,7 @@ impl CoreRuntime {
 
     pub async fn restore_local_sessions(&self) {
         providers::matrix::restore_sessions(Arc::clone(&self.state)).await;
+        providers::telegram::restore_sessions(Arc::clone(&self.state)).await;
     }
 
     pub async fn connect_remote(
