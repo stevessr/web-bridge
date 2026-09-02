@@ -195,10 +195,7 @@ async fn run_remote_manager(
             None => {
                 sleep(reconnect_delay).await;
                 match connect_async(&endpoint).await {
-                    Ok((socket, _)) => {
-                        reconnect_delay = RECONNECT_INITIAL;
-                        socket
-                    }
+                    Ok((socket, _)) => socket,
                     Err(error) => {
                         connected.store(false, Ordering::Release);
                         let _ = state.events.send(ServerFrame::Error {
@@ -287,8 +284,6 @@ async fn run_connection(
                 if let ClientFrame::Command { request_id, .. } = &frame
                     && !pending.contains_key(request_id)
                 {
-                    // The command was queued immediately before a disconnect and has
-                    // already been failed. Never replay it into a new connection.
                     continue;
                 }
                 send_client_frame(&mut sink, &frame)
@@ -354,8 +349,6 @@ fn apply_server_frame(
             account,
             ..
         } => {
-            // A challenge is progress, not completion. Keep the pending entry until
-            // Ack/Error. Validate it when the server sends challenge before Ack.
             if let Some(metadata) = pending.get(request_id)
                 && let Some(expected) = &metadata.account
                 && expected != account
@@ -442,7 +435,6 @@ fn mirror_account(state: &CoreState, snapshot: &AccountSnapshot) {
         .get(&snapshot.account)
         .is_some_and(|current| current.route == RouteMode::Client)
     {
-        // A late remote event must never take ownership back from a client route.
         return;
     }
     let Ok(_) = state.accounts.upsert(
