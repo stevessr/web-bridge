@@ -14,7 +14,7 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
   assert.equal(original.main, './application/app_launcher/index.js');
 });
 
-test('loader bypasses QQ DevTools Runtime with hardened Electron webContents APIs', () => {
+test('loader bypasses QQ DevTools Runtime and pushes dirty signals through webContents console events', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
   assert.doesNotThrow(() => new Function(source));
   assert.match(source, /webContents\.getAllWebContents\(\)/);
@@ -28,11 +28,14 @@ test('loader bypasses QQ DevTools Runtime with hardened Electron webContents API
   assert.match(source, /withTimeout/);
   assert.match(source, /Runtime\.evaluate/);
   assert.match(source, /DOM\.setFileInputFiles/);
+  assert.match(source, /console-message/);
+  assert.match(source, /console\.debug\(marker/);
   assert.match(source, /Runtime\.bindingCalled/);
-  assert.match(source, /WEB_BRIDGE_SHIM_POLL_MS/);
+  assert.match(source, /mode: 'electron-hybrid-push'/);
+  assert.match(source, /WEB_BRIDGE_SHIM_POLL_MS \|\| 1000/);
   assert.match(source, /QQ Electron hybrid bridge listening/);
   assert.match(source, /send\(\{ id, result: \{ attached: true/);
-  assert.match(source, /bindings\.add\(name\);\s*startDirtyPoll\(\);/);
+  assert.match(source, /bindings\.add\(name\);\s*await installBinding\(name\);\s*startDirtyPoll\(\);/);
   assert.match(source, /require\(entry\)/);
   assert.doesNotMatch(source, /\.debugger\./);
   assert.doesNotMatch(source, /appendSwitch\('remote-debugging-port'/);
