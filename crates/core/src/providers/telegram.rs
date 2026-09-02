@@ -10,6 +10,7 @@ use grammers_client::{
 };
 use grammers_mtsender::SenderPool;
 use grammers_session::{storages::SqliteSession, types::PeerRef, updates::UpdatesLike};
+use serde_json::json;
 use tokio::{
     sync::{Mutex, mpsc::UnboundedReceiver},
     task::AbortHandle,
@@ -59,6 +60,10 @@ pub async fn begin_login(
         .accounts
         .upsert(account.clone(), Some(phone.clone()), route)
         .map_err(anyhow::Error::msg)?;
+    state
+        .accounts
+        .set_provider_metadata(&account, json!({"api_id": api_id, "phone": phone}))
+        .map_err(anyhow::Error::msg)?;
     let snapshot = state
         .accounts
         .set_status(&account, AccountStatus::Connecting, None)
@@ -67,30 +72,8 @@ pub async fn begin_login(
         account: snapshot.clone(),
     });
 
-    let account_dir = state.account_data_dir(&account);
-    tokio::fs::create_dir_all(&account_dir)
-        .await
-        .context("create Telegram account directory")?;
-    let session = Arc::new(
-        SqliteSession::open(account_dir.join("telegram.session"))
-            .await
-            .context("open Telegram session")?,
-    );
-    let SenderPool {
-        runner,
-        updates,
-        handle,
-    } = SenderPool::new(Arc::clone(&session), api_id);
-    let client = Client::new(handle);
-    let pool_task = tokio::spawn(runner.run());
-    let telegram = Arc::new(TelegramHandle {
-        client: client.clone(),
-        login: Mutex::new(LoginStage::None),
-        updates: Mutex::new(Some(updates)),
-        update_task: Mutex::new(None),
-        pool_task: pool_task.abort_handle(),
-        peers: Arc::new(DashMap::new()),
-    });
+    let telegram = build_handle(&state, &account, api_id).await?;
+    let client = telegram.client.clone();
     state.telegram.insert(account.clone(), telegram.clone());
 
     if client
@@ -109,6 +92,83 @@ pub async fn begin_login(
         .context("request Telegram login code")?;
     *telegram.login.lock().await = LoginStage::Code(token);
     Ok((snapshot, Some(AuthChallenge::TelegramCode)))
+}
+
+pub async fn restore_sessions(state: Arc<CoreState>) {
+    let accounts: Vec<_> = state
+        .accounts
+        .list()
+        .into_iter()
+        .filter(|snapshot| {
+            snapshot.account.network == Network::Telegram
+                && state.role.route_is_local(snapshot.route)
+        })
+        .map(|snapshot| snapshot.account)
+        .collect();
+
+    for account in accounts {
+        if let Err(error) = restore_account(state.clone(), &account).await {
+            mark_error(
+                &state,
+                &account,
+                &format!("Telegram session restore failed: {error:#}"),
+            );
+        }
+    }
+}
+
+pub async fn restore_account(
+    state: Arc<CoreState>,
+    account: &AccountRef,
+) -> Result<AccountSnapshot> {
+    let snapshot = state
+        .accounts
+        .get(account)
+        .context("Telegram account is not registered")?;
+    if account.network != Network::Telegram {
+        bail!("account is not a Telegram account");
+    }
+    if !state.role.route_is_local(snapshot.route) {
+        bail!("Telegram account route belongs to the other runtime");
+    }
+
+    let metadata = state
+        .accounts
+        .provider_metadata(account)
+        .context("Telegram restore metadata is missing")?;
+    let api_id = metadata
+        .get("api_id")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok())
+        .context("Telegram restore metadata has no valid api_id")?;
+
+    let connecting = state
+        .accounts
+        .set_status(account, AccountStatus::Connecting, None)
+        .context("Telegram account disappeared during restore")?;
+    let _ = state.events.send(ServerFrame::AccountChanged {
+        account: connecting,
+    });
+
+    let telegram = build_handle(&state, account, api_id).await?;
+    if !telegram
+        .client
+        .is_authorized()
+        .await
+        .context("check restored Telegram session")?
+    {
+        stop_handle(&telegram).await;
+        return state
+            .accounts
+            .set_status(account, AccountStatus::Offline, None)
+            .context("Telegram account disappeared after unauthorised restore");
+    }
+
+    *telegram.login.lock().await = LoginStage::Authorized;
+    if let Some((_, old)) = state.telegram.insert(account.clone(), telegram.clone()) {
+        stop_handle(&old).await;
+    }
+    finish_authorized(state, account.clone(), telegram).await
 }
 
 pub async fn submit_code(
@@ -218,11 +278,7 @@ pub async fn send_message(
 
 pub async fn disconnect(state: &CoreState, account: &AccountRef) {
     if let Some((_, handle)) = state.telegram.remove(account) {
-        handle.client.disconnect();
-        handle.pool_task.abort();
-        if let Some(task) = handle.update_task.lock().await.take() {
-            task.abort();
-        }
+        stop_handle(&handle).await;
     }
     if let Some(snapshot) = state
         .accounts
@@ -231,6 +287,45 @@ pub async fn disconnect(state: &CoreState, account: &AccountRef) {
         let _ = state
             .events
             .send(ServerFrame::AccountChanged { account: snapshot });
+    }
+}
+
+async fn build_handle(
+    state: &CoreState,
+    account: &AccountRef,
+    api_id: i32,
+) -> Result<Arc<TelegramHandle>> {
+    let account_dir = state.account_data_dir(account);
+    tokio::fs::create_dir_all(&account_dir)
+        .await
+        .context("create Telegram account directory")?;
+    let session = Arc::new(
+        SqliteSession::open(account_dir.join("telegram.session"))
+            .await
+            .context("open Telegram session")?,
+    );
+    let SenderPool {
+        runner,
+        updates,
+        handle,
+    } = SenderPool::new(session, api_id);
+    let client = Client::new(handle);
+    let pool_task = tokio::spawn(runner.run());
+    Ok(Arc::new(TelegramHandle {
+        client,
+        login: Mutex::new(LoginStage::None),
+        updates: Mutex::new(Some(updates)),
+        update_task: Mutex::new(None),
+        pool_task: pool_task.abort_handle(),
+        peers: Arc::new(DashMap::new()),
+    }))
+}
+
+async fn stop_handle(handle: &TelegramHandle) {
+    handle.client.disconnect();
+    handle.pool_task.abort();
+    if let Some(task) = handle.update_task.lock().await.take() {
+        task.abort();
     }
 }
 
