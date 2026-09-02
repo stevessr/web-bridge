@@ -4,3 +4,8 @@ node_modules/
 .env
 coverage/
 dist/
+
+# YouTube -> Bilibili media pipeline
+config/media.json
+secrets/
+.web-bridge-media/
