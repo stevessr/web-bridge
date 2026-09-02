@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod napcat;
 pub mod providers;
+pub mod remote;
 pub mod state;
 pub mod web;
 
@@ -8,7 +9,8 @@ use std::sync::Arc;
 
 pub use accounts::{AccountRegistry, RuntimeRole};
 pub use state::{CoreConfig, CoreState};
-use web_bridge_protocol::{AccountRef, AccountSnapshot, RouteMode};
+use uuid::Uuid;
+use web_bridge_protocol::{AccountRef, AccountSnapshot, Command, RouteMode};
 
 #[derive(Clone)]
 pub struct CoreRuntime {
@@ -53,6 +55,56 @@ impl CoreRuntime {
 
     pub fn route_is_local(&self, route: RouteMode) -> bool {
         self.state.role.route_is_local(route)
+    }
+
+    pub async fn connect_remote(
+        &self,
+        endpoint: &str,
+        token: &str,
+        device_id: String,
+    ) -> anyhow::Result<()> {
+        remote::ensure_client_role(&self.state)?;
+        let bridge = remote::RemoteBridge::connect(
+            Arc::clone(&self.state),
+            endpoint,
+            token,
+            device_id,
+        )
+        .await?;
+        let mut remote = self
+            .state
+            .remote
+            .lock()
+            .map_err(|_| anyhow::anyhow!("remote bridge lock poisoned"))?;
+        if let Some(previous) = remote.replace(bridge) {
+            previous.close();
+        }
+        Ok(())
+    }
+
+    pub fn remote_command(&self, command: Command) -> anyhow::Result<Uuid> {
+        remote::ensure_client_role(&self.state)?;
+        let remote = self
+            .state
+            .remote
+            .lock()
+            .map_err(|_| anyhow::anyhow!("remote bridge lock poisoned"))?;
+        remote
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("server is not connected"))?
+            .command(command)
+    }
+
+    pub fn disconnect_remote(&self) -> anyhow::Result<()> {
+        let mut remote = self
+            .state
+            .remote
+            .lock()
+            .map_err(|_| anyhow::anyhow!("remote bridge lock poisoned"))?;
+        if let Some(bridge) = remote.take() {
+            bridge.close();
+        }
+        Ok(())
     }
 }
 
