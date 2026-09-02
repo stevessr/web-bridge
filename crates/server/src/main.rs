@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
             ),
         },
     );
+    runtime.restore_local_sessions().await;
 
     let app = web::router(runtime.state())
         .layer(TraceLayer::new_for_http())

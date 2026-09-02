@@ -1,12 +1,13 @@
 use std::sync::{Mutex, OnceLock};
 
-use tokio::sync::broadcast;
+use tokio::sync::{OnceCell, broadcast};
 use uuid::Uuid;
 use web_bridge_core::{CoreConfig, CoreRuntime, RuntimeRole, commands};
 use web_bridge_protocol::{AccountRef, Command, Network, PROTOCOL_VERSION, RouteMode, ServerFrame};
 
 static RUNTIME: OnceLock<CoreRuntime> = OnceLock::new();
 static EVENT_RECEIVER: OnceLock<Mutex<broadcast::Receiver<ServerFrame>>> = OnceLock::new();
+static LOCAL_SESSION_RESTORE: OnceCell<()> = OnceCell::const_new();
 
 fn runtime() -> &'static CoreRuntime {
     RUNTIME.get_or_init(|| CoreRuntime::new(RuntimeRole::Client, CoreConfig::default()))
@@ -14,6 +15,14 @@ fn runtime() -> &'static CoreRuntime {
 
 fn event_receiver() -> &'static Mutex<broadcast::Receiver<ServerFrame>> {
     EVENT_RECEIVER.get_or_init(|| Mutex::new(runtime().state().events.subscribe()))
+}
+
+async fn ensure_local_sessions_restored() {
+    LOCAL_SESSION_RESTORE
+        .get_or_init(|| async {
+            runtime().restore_local_sessions().await;
+        })
+        .await;
 }
 
 #[flutter_rust_bridge::frb(sync)]
@@ -33,6 +42,7 @@ pub async fn connect_server(
     token: String,
     device_id: String,
 ) -> Result<(), String> {
+    ensure_local_sessions_restored().await;
     runtime()
         .connect_remote(&endpoint, &token, device_id)
         .await
@@ -51,6 +61,7 @@ pub fn disconnect_server() -> Result<(), String> {
 }
 
 pub async fn execute_command_json(command_json: String) -> Result<String, String> {
+    ensure_local_sessions_restored().await;
     let command: Command =
         serde_json::from_str(&command_json).map_err(|error| format!("invalid command: {error}"))?;
     let request_id = Uuid::new_v4();

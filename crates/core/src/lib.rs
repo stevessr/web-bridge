@@ -60,6 +60,10 @@ impl CoreRuntime {
         self.state.role.route_is_local(route)
     }
 
+    pub async fn restore_local_sessions(&self) {
+        providers::matrix::restore_sessions(Arc::clone(&self.state)).await;
+    }
+
     pub async fn connect_remote(
         &self,
         endpoint: &str,
