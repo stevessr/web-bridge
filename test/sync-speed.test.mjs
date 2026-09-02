@@ -16,14 +16,13 @@ function withoutEnv(names, fn) {
   }
 }
 
-test('default sync cadence stays within a roughly 50ms mutation-to-patch budget', () => {
+test('push sync uses frame-paced patch coalescing and only slow safety polling', () => {
   const config = withoutEnv(['WEB_BRIDGE_PATCH_THROTTLE_MS', 'WEB_BRIDGE_SHIM_POLL_MS'], () => loadConfig());
   assert.equal(config.patchThrottleMs, 16);
-  assert.equal(config.shimPollMs, 33);
-  assert.ok(config.patchThrottleMs + config.shimPollMs <= 50);
+  assert.equal(config.shimPollMs, 1000);
 });
 
-test('QQ launcher forwards the low-latency shim poll default while preserving overrides', async () => {
+test('QQ launcher keeps fallback polling slow while preserving user overrides', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.match(pkg.scripts['dev:qq'], /WEB_BRIDGE_SHIM_POLL_MS=\$\{WEB_BRIDGE_SHIM_POLL_MS:-33\}/);
+  assert.match(pkg.scripts['dev:qq'], /WEB_BRIDGE_SHIM_POLL_MS=\$\{WEB_BRIDGE_SHIM_POLL_MS:-1000\}/);
 });
