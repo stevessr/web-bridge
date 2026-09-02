@@ -170,6 +170,9 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
                         if let Some((echo, result)) = napcat::action_response(&value) {
                             resolve_napcat_action(&state, &account, &self_id, echo, result);
                         } else if let Some(message) = napcat::event_to_message(&value) {
+                            if let Err(error) = state.storage.store_message(&message) {
+                                warn!(qq = %self_id, %error, "failed to persist QQ message");
+                            }
                             let _ = state.events.send(ServerFrame::Message { message });
                         }
                     }
