@@ -38,8 +38,8 @@ pub async fn execute(
             }
         }
         Command::RemoveAccount { account } => {
-            if state.accounts.get(&account).is_none() {
-                return vec![account_not_found(request_id)];
+            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+                return vec![frame];
             }
             disconnect_provider(state, &account).await;
             if let Err(error) = purge_provider_data(state, &account).await {
@@ -162,6 +162,9 @@ pub async fn execute(
             }
         }
         Command::DisconnectAccount { account } => {
+            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+                return vec![frame];
+            }
             disconnect_provider(state, &account).await;
             vec![ServerFrame::Ack { request_id }]
         }
@@ -194,6 +197,65 @@ pub async fn execute(
             match result {
                 Ok(()) => vec![ServerFrame::Ack { request_id }],
                 Err(error) => vec![provider_error(request_id, "send_failed", error)],
+            }
+        }
+        Command::ListConversations { account, limit } => {
+            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+                return vec![frame];
+            }
+            match state.storage.list_conversations(&account, limit) {
+                Ok(conversations) => vec![ServerFrame::Conversations {
+                    request_id,
+                    conversations,
+                }],
+                Err(error) => vec![storage_error(request_id, error)],
+            }
+        }
+        Command::ListMessages {
+            account,
+            conversation,
+            before,
+            limit,
+        } => {
+            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+                return vec![frame];
+            }
+            match state
+                .storage
+                .list_messages(&account, &conversation, before, limit)
+            {
+                Ok(messages) => vec![ServerFrame::Messages {
+                    request_id,
+                    messages,
+                }],
+                Err(error) => vec![storage_error(request_id, error)],
+            }
+        }
+        Command::GetCursor { account, key } => {
+            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+                return vec![frame];
+            }
+            match state.storage.cursor(&account, &key) {
+                Ok(value) => vec![ServerFrame::Cursor {
+                    request_id,
+                    account,
+                    key,
+                    value,
+                }],
+                Err(error) => vec![storage_error(request_id, error)],
+            }
+        }
+        Command::SetCursor {
+            account,
+            key,
+            value,
+        } => {
+            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+                return vec![frame];
+            }
+            match state.storage.set_cursor(&account, &key, &value) {
+                Ok(()) => vec![ServerFrame::Ack { request_id }],
+                Err(error) => vec![storage_error(request_id, error)],
             }
         }
     }
@@ -276,6 +338,20 @@ async fn purge_provider_data(state: &CoreState, account: &AccountRef) -> anyhow:
     }
 }
 
+fn ensure_local_account(
+    state: &CoreState,
+    account: &AccountRef,
+    request_id: uuid::Uuid,
+) -> Result<(), ServerFrame> {
+    let Some(snapshot) = state.accounts.get(account) else {
+        return Err(account_not_found(request_id));
+    };
+    if !state.role.route_is_local(snapshot.route) {
+        return Err(route_not_local(request_id));
+    }
+    Ok(())
+}
+
 fn route_not_local(request_id: uuid::Uuid) -> ServerFrame {
     ServerFrame::Error {
         request_id: Some(request_id),
@@ -300,6 +376,10 @@ fn account_not_found(request_id: uuid::Uuid) -> ServerFrame {
     }
 }
 
+fn storage_error(request_id: uuid::Uuid, error: rusqlite::Error) -> ServerFrame {
+    provider_error(request_id, "storage_failed", error.into())
+}
+
 fn provider_error(request_id: uuid::Uuid, code: &str, error: anyhow::Error) -> ServerFrame {
     ServerFrame::Error {
         request_id: Some(request_id),
@@ -312,8 +392,9 @@ fn provider_error(request_id: uuid::Uuid, code: &str, error: anyhow::Error) -> S
 mod tests {
     use super::*;
     use crate::{accounts::RuntimeRole, state::CoreConfig};
+    use chrono::{TimeZone, Utc};
     use uuid::Uuid;
-    use web_bridge_protocol::RouteMode;
+    use web_bridge_protocol::{ConversationKind, ConversationRef, MessagePart, RouteMode, UnifiedMessage};
 
     #[tokio::test]
     async fn disconnect_preserves_provider_data_but_remove_purges_it() {
@@ -373,5 +454,75 @@ mod tests {
 
             let _ = tokio::fs::remove_dir_all(root).await;
         }
+    }
+
+    #[tokio::test]
+    async fn history_commands_use_the_local_account_store() {
+        let state = Arc::new(CoreState::new(RuntimeRole::Client, CoreConfig::default()));
+        let account = AccountRef {
+            network: Network::Matrix,
+            id: "history-account".into(),
+        };
+        state
+            .accounts
+            .upsert(account.clone(), None, RouteMode::Client)
+            .unwrap();
+        let conversation = ConversationRef {
+            kind: ConversationKind::Room,
+            id: "!history:example.org".into(),
+        };
+        state
+            .storage
+            .store_message(&UnifiedMessage {
+                id: "$history".into(),
+                account: account.clone(),
+                conversation: conversation.clone(),
+                sender_id: "@alice:example.org".into(),
+                sender_name: Some("Alice".into()),
+                timestamp: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+                parts: vec![MessagePart::Text {
+                    text: "stored".into(),
+                }],
+                raw: None,
+            })
+            .unwrap();
+
+        let frames = execute(
+            Uuid::new_v4(),
+            Command::ListMessages {
+                account: account.clone(),
+                conversation: conversation.clone(),
+                before: None,
+                limit: 50,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(
+            frames.as_slice(),
+            [ServerFrame::Messages { messages, .. }] if messages.len() == 1
+        ));
+
+        let remote_account = AccountRef {
+            network: Network::Matrix,
+            id: "server-owned".into(),
+        };
+        state
+            .accounts
+            .upsert(remote_account.clone(), None, RouteMode::Server)
+            .unwrap();
+        let frames = execute(
+            Uuid::new_v4(),
+            Command::GetCursor {
+                account: remote_account,
+                key: "sync".into(),
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(
+            frames.as_slice(),
+            [ServerFrame::Error { code, .. }] if code == "route_not_local"
+        ));
     }
 }
