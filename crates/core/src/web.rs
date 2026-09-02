@@ -1,18 +1,22 @@
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
-    extract::{Query, State, WebSocketUpgrade, ws::{Message, WebSocket}},
+    Json, Router,
+    extract::{
+        Query, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use web_bridge_protocol::{
-    AccountRef, AccountStatus, ClientFrame, Command, Network, PROTOCOL_VERSION, RouteMode, ServerFrame,
+    AccountRef, AccountStatus, ClientFrame, Command, Network, PROTOCOL_VERSION, RouteMode,
+    ServerFrame,
 };
 
 use crate::{napcat, state::CoreState};
@@ -66,7 +70,15 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
     let (mut sink, mut stream) = socket.split();
     let mut events = state.events.subscribe();
 
-    if send_frame(&mut sink, &ServerFrame::Ready { protocol: PROTOCOL_VERSION }).await.is_err() {
+    if send_frame(
+        &mut sink,
+        &ServerFrame::Ready {
+            protocol: PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .is_err()
+    {
         return;
     }
 
@@ -109,13 +121,18 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
 async fn handle_client_frame(frame: ClientFrame, state: &Arc<CoreState>) -> Vec<ServerFrame> {
     match frame {
         ClientFrame::Ping { nonce } => vec![ServerFrame::Pong { nonce }],
-        ClientFrame::Hello { protocol, .. } if protocol != PROTOCOL_VERSION => vec![ServerFrame::Error {
-            request_id: None,
-            code: "protocol_mismatch".into(),
-            message: format!("server protocol is {PROTOCOL_VERSION}"),
-        }],
+        ClientFrame::Hello { protocol, .. } if protocol != PROTOCOL_VERSION => {
+            vec![ServerFrame::Error {
+                request_id: None,
+                code: "protocol_mismatch".into(),
+                message: format!("server protocol is {PROTOCOL_VERSION}"),
+            }]
+        }
         ClientFrame::Hello { .. } => vec![],
-        ClientFrame::Command { request_id, command } => handle_command(request_id, command, state).await,
+        ClientFrame::Command {
+            request_id,
+            command,
+        } => handle_command(request_id, command, state).await,
     }
 }
 
@@ -129,7 +146,11 @@ async fn handle_command(
             request_id: Some(request_id),
             accounts: state.accounts.list(),
         }],
-        Command::RegisterAccount { account, display_name, route } => {
+        Command::RegisterAccount {
+            account,
+            display_name,
+            route,
+        } => {
             if !state.role.route_is_local(route) {
                 return vec![route_not_local(request_id)];
             }
@@ -166,9 +187,17 @@ async fn handle_command(
                 Err(message) => vec![policy_error(request_id, message)],
             }
         }
-        Command::SendMessage { account, route, conversation, parts } => {
+        Command::SendMessage {
+            account,
+            route,
+            conversation,
+            parts,
+        } => {
             if !account.network.permits_route(route) {
-                return vec![policy_error(request_id, "QQ must be routed through the server")];
+                return vec![policy_error(
+                    request_id,
+                    "QQ must be routed through the server",
+                )];
             }
             if !state.role.route_is_local(route) {
                 return vec![route_not_local(request_id)];
@@ -177,7 +206,8 @@ async fn handle_command(
                 return vec![ServerFrame::Error {
                     request_id: Some(request_id),
                     code: "provider_not_ready".into(),
-                    message: "Matrix and Telegram shared-core providers are not connected yet".into(),
+                    message: "Matrix and Telegram shared-core providers are not connected yet"
+                        .into(),
                 }];
             }
             let Some(sender) = state.qq.get(&account) else {
@@ -188,7 +218,9 @@ async fn handle_command(
                 }];
             };
             match napcat::build_send_action(&conversation, &parts, request_id.to_string()) {
-                Ok(action) if sender.send(action.to_string()).is_ok() => vec![ServerFrame::Ack { request_id }],
+                Ok(action) if sender.send(action.to_string()).is_ok() => {
+                    vec![ServerFrame::Ack { request_id }]
+                }
                 Ok(_) => vec![ServerFrame::Error {
                     request_id: Some(request_id),
                     code: "qq_disconnected".into(),
@@ -205,7 +237,10 @@ async fn handle_command(
 }
 
 async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String) {
-    let account = AccountRef { network: Network::Qq, id: self_id.clone() };
+    let account = AccountRef {
+        network: Network::Qq,
+        id: self_id.clone(),
+    };
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
@@ -218,7 +253,9 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
         .set_status(&account, AccountStatus::Online, None)
         .unwrap_or(snapshot);
     state.qq.insert(account.clone(), tx);
-    let _ = state.events.send(ServerFrame::AccountChanged { account: snapshot });
+    let _ = state
+        .events
+        .send(ServerFrame::AccountChanged { account: snapshot });
     info!(qq = %self_id, "NapCat connected");
 
     loop {
@@ -242,8 +279,13 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
     }
 
     state.qq.remove(&account);
-    if let Some(snapshot) = state.accounts.set_status(&account, AccountStatus::Offline, None) {
-        let _ = state.events.send(ServerFrame::AccountChanged { account: snapshot });
+    if let Some(snapshot) = state
+        .accounts
+        .set_status(&account, AccountStatus::Offline, None)
+    {
+        let _ = state
+            .events
+            .send(ServerFrame::AccountChanged { account: snapshot });
     }
     info!(qq = %self_id, "NapCat disconnected");
 }
