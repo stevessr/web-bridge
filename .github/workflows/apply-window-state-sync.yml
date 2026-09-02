@@ -15,6 +15,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Repair merged-source anchor
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/.apply-window-state-sync.mjs')
+          text = path.read_text()
+          text = text.replace("windowSizeButton?.addEventListener('click', () => {", "windowSizeButton?.addEventListener('click', (event) => {")
+          path.write_text(text)
+          PY
       - name: Apply implementation
         run: node scripts/.apply-window-state-sync.mjs
       - name: Validate
