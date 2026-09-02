@@ -4,12 +4,9 @@ set -euo pipefail
 CDP_HOST="${WEB_BRIDGE_CDP_HOST:-127.0.0.1}"
 WEB_HOST="${WEB_BRIDGE_HOST:-127.0.0.1}"
 WEB_PORT="${WEB_BRIDGE_PORT:-8080}"
-# QQ 3.2.33-52892 disables the Node CLI inspector and also ignores the renderer
-# remote-debugging switch when it is supplied only on the packaged executable
-# command line. On Linux, prefer a temporary shadow Electron distribution that
-# runs a tiny main-process shim before QQ's real entry and uses app.commandLine.
-# Unlike the previous bubblewrap overlay, this does not introduce a nested user
-# namespace, so Chromium can keep its normal zygote/renderer sandbox.
+# QQ 3.2.33-52892 accepts neither the Node inspector nor a usable Chromium
+# remote-debugging HTTP endpoint. The shadow main-entry shim therefore exposes
+# Electron's supported webContents.debugger API over a private loopback socket.
 MAIN_SHIM_MODE="${WEB_BRIDGE_QQ_MAIN_SHIM:-auto}"
 # Kept only as an explicit diagnostic path for Electron builds whose
 # nodeCliInspect fuse is enabled.
@@ -19,8 +16,8 @@ case "$CDP_HOST" in
   127.0.0.1|localhost|::1) ;;
   *)
     if [[ "${WEB_BRIDGE_ALLOW_REMOTE_CDP:-0}" != "1" ]]; then
-      echo "[web-bridge] refusing non-loopback CDP host: $CDP_HOST" >&2
-      echo "[web-bridge] CDP is privileged; keep it on loopback." >&2
+      echo "[web-bridge] refusing non-loopback debugger host: $CDP_HOST" >&2
+      echo "[web-bridge] the debugger transport is privileged; keep it on loopback." >&2
       exit 3
     fi
     ;;
@@ -43,6 +40,11 @@ if [[ -n "${WEB_BRIDGE_CDP_PORT:-}" ]]; then
 else
   CDP_PORT="$(free_loopback_port)"
 fi
+
+if [[ -z "${WEB_BRIDGE_QQ_SHIM_TOKEN:-}" ]]; then
+  WEB_BRIDGE_QQ_SHIM_TOKEN="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))")"
+fi
+export WEB_BRIDGE_QQ_SHIM_TOKEN
 
 if [[ -n "${QQ_BIN:-}" ]]; then
   QQ_DETECT_SOURCE="env:QQ_BIN"
@@ -77,7 +79,7 @@ if [[ -n "$RUNNING_PID" ]]; then
   cat >&2 <<EOF2
 [web-bridge] QQ NT is already running (PID $RUNNING_PID).
 [web-bridge] detected executable: $QQ_BIN
-[web-bridge] Fully exit QQ first. A fresh process must receive the private CDP flags.
+[web-bridge] Fully exit QQ first. A fresh process must receive the bridge setup.
 EOF2
   exit 2
 fi
@@ -125,7 +127,7 @@ main_shim_disabled() {
 
 prepare_main_shim() {
   if main_shim_disabled; then
-    echo "[web-bridge] QQ main-entry CDP shim disabled by WEB_BRIDGE_QQ_MAIN_SHIM=$MAIN_SHIM_MODE"
+    echo "[web-bridge] QQ main-entry debugger shim disabled by WEB_BRIDGE_QQ_MAIN_SHIM=$MAIN_SHIM_MODE"
     return 1
   fi
   if [[ ! -f "$QQ_APP_PACKAGE" ]]; then
@@ -169,15 +171,16 @@ prepare_main_shim() {
   USE_MAIN_SHIM=1
   echo "[web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)"
   echo "[web-bridge] shadow executable: $SHADOW_QQ_BIN"
+  echo "[web-bridge] using Electron webContents.debugger transport; Chromium remote-debugging-port is not required"
   echo "[web-bridge] Chromium sandbox remains enabled; no bubblewrap/user namespace is used"
   return 0
 }
 
 launch_qq_main_shim() {
-  "$SHADOW_QQ_BIN" \
-    "--remote-debugging-address=$CDP_HOST" \
-    "--remote-debugging-port=$CDP_PORT" \
-    "$@" &
+  # The main shim itself owns CDP_PORT as a private line-delimited debugger proxy.
+  # Do not pass --remote-debugging-port here: Tencent's Electron build ignores it,
+  # and a working Chromium endpoint would conflict with the shim listener anyway.
+  "$SHADOW_QQ_BIN" "$@" &
   QQ_PID=$!
 }
 
@@ -193,12 +196,12 @@ echo "[web-bridge] QQ executable ($QQ_DETECT_SOURCE): $QQ_BIN"
 if [[ "$QQ_BIN" == /opt/QQ/qq || "$QQ_BIN" == /opt/qq/qq ]]; then
   echo "[web-bridge] using direct packaged Electron host"
 elif [[ "$QQ_BIN" == */linuxqq ]]; then
-  echo "[web-bridge] warning: selected a linuxqq launcher/wrapper; prefer QQ_BIN=/opt/QQ/qq for CDP" >&2
+  echo "[web-bridge] warning: selected a linuxqq launcher/wrapper; prefer QQ_BIN=/opt/QQ/qq" >&2
 fi
-echo "[web-bridge] private CDP endpoint: $CDP_HOST:$CDP_PORT"
+echo "[web-bridge] private debugger endpoint: $CDP_HOST:$CDP_PORT"
 
-# Bring the browser endpoint up before QQ finishes booting. The host already has
-# a reconnecting attach loop, so the Web UI can show waiting/syncing state.
+# Bring the browser endpoint up before QQ finishes booting. listTargets supports
+# both ordinary Chromium CDP and the main-shim webContents.debugger transport.
 node src/host.mjs &
 BRIDGE_PID=$!
 echo "[web-bridge] browser endpoint: http://$WEB_HOST:$WEB_PORT"
@@ -207,7 +210,7 @@ prepare_main_shim || true
 
 # Experimental inspector path only. Known-current Linux QQ rejects --inspect-brk
 # because its Electron nodeCliInspect fuse is disabled. If explicitly enabled,
-# fall back to the shadow main-entry launcher rather than to argv-only launch.
+# fall back to the shadow debugger bridge rather than to argv-only launch.
 if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP" != "off" ]]; then
   INSPECTOR_HOST="127.0.0.1"
   INSPECTOR_PORT="$(free_loopback_port)"
@@ -221,7 +224,7 @@ if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP"
     --cdp-host "$CDP_HOST" \
     --cdp-port "$CDP_PORT" \
     --timeout "${WEB_BRIDGE_QQ_BOOTSTRAP_TIMEOUT_MS:-15000}"; then
-    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with shadow-main/argv fallback" >&2
+    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with shadow debugger/argv fallback" >&2
     kill "$QQ_PID" >/dev/null 2>&1 || true
     wait "$QQ_PID" 2>/dev/null || true
     QQ_PID=""
@@ -237,7 +240,22 @@ fi
 # Emit one actionable diagnostic early instead of waiting a full attach timeout.
 (
   sleep "${WEB_BRIDGE_CDP_DIAG_DELAY_SEC:-12}"
-  if ! node - "$CDP_HOST" "$CDP_PORT" <<'NODE' >/dev/null 2>&1
+  if [[ "$USE_MAIN_SHIM" == "1" ]]; then
+    if ! node --input-type=module - "$CDP_HOST" "$CDP_PORT" <<'NODE' >/dev/null 2>&1
+import { listShimTargets } from './src/cdp.mjs';
+const [, , host, port] = process.argv;
+try {
+  await listShimTargets(host, Number(port), 1500);
+  process.exit(0);
+} catch {
+  process.exit(1);
+}
+NODE
+    then
+      echo "[web-bridge] QQ webContents.debugger bridge is still unreachable; look above for 'QQ webContents.debugger bridge listening'" >&2
+    fi
+  else
+    if ! node - "$CDP_HOST" "$CDP_PORT" <<'NODE' >/dev/null 2>&1
 const [, , host, port] = process.argv;
 try {
   const response = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
@@ -246,11 +264,8 @@ try {
   process.exit(1);
 }
 NODE
-  then
-    if [[ "$USE_MAIN_SHIM" == "1" ]]; then
-      echo "[web-bridge] CDP is still unreachable after startup even with the QQ shadow main shim; look above for 'QQ main shim injected Chromium CDP switches'" >&2
-    else
-      echo "[web-bridge] CDP is still unreachable after startup; main-entry shim was not active (set WEB_BRIDGE_QQ_MAIN_SHIM=1 for a hard failure)" >&2
+    then
+      echo "[web-bridge] Chromium CDP is still unreachable after startup; main-entry shim was not active (set WEB_BRIDGE_QQ_MAIN_SHIM=1 for a hard failure)" >&2
     fi
   fi
 ) &
