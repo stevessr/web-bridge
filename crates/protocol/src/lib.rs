@@ -71,12 +71,27 @@ pub struct ConversationRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessagePart {
-    Text { text: String },
-    Image { url: String, alt: Option<String> },
-    File { url: String, name: Option<String> },
-    Mention { id: String, display_name: Option<String> },
-    Reply { message_id: String },
-    Unsupported { raw: Value },
+    Text {
+        text: String,
+    },
+    Image {
+        url: String,
+        alt: Option<String>,
+    },
+    File {
+        url: String,
+        name: Option<String>,
+    },
+    Mention {
+        id: String,
+        display_name: Option<String>,
+    },
+    Reply {
+        message_id: String,
+    },
+    Unsupported {
+        raw: Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -126,12 +141,31 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
-    Ready { protocol: u16 },
-    Accounts { request_id: Option<Uuid>, accounts: Vec<AccountSnapshot> },
-    AccountChanged { account: AccountSnapshot },
-    AccountRemoved { account: AccountRef },
-    Message { message: UnifiedMessage },
-    Ack { request_id: Uuid },
-    Error { request_id: Option<Uuid>, code: String, message: String },
-    Pong { nonce: String },
+    Ready {
+        protocol: u16,
+    },
+    Accounts {
+        request_id: Option<Uuid>,
+        accounts: Vec<AccountSnapshot>,
+    },
+    AccountChanged {
+        account: AccountSnapshot,
+    },
+    AccountRemoved {
+        account: AccountRef,
+    },
+    Message {
+        message: UnifiedMessage,
+    },
+    Ack {
+        request_id: Uuid,
+    },
+    Error {
+        request_id: Option<Uuid>,
+        code: String,
+        message: String,
+    },
+    Pong {
+        nonce: String,
+    },
 }
