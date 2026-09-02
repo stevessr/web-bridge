@@ -39,3 +39,23 @@ test('failed jobs get a retry time and eventually become dead', async (t) => {
   assert.equal(dead.status, 'dead');
   assert.equal(dead.nextRetryAt, null);
 });
+
+test('failed or dead jobs can be manually requeued with attempts reset', async (t) => {
+  const workDir = await mkdtemp(path.join(os.tmpdir(), 'web-bridge-media-'));
+  t.after(() => rm(workDir, { recursive: true, force: true }));
+  const config = { workDir, dedupeScope: 'account', maxAttempts: 1, retryBackoffSeconds: 1 };
+  const state = await new MediaState(config).load();
+  const entry = { id: 'video789', title: 'retry me', webpageUrl: 'https://www.youtube.com/watch?v=video789' };
+
+  await state.markRunning('one', entry);
+  const dead = await state.markFailed('one', entry.id, new Error('boom'));
+  assert.equal(dead.status, 'dead');
+  assert.equal(dead.attempts, 1);
+
+  const queued = await state.requeue(dead.key);
+  assert.equal(queued.status, 'discovered');
+  assert.equal(queued.attempts, 0);
+  assert.equal(queued.error, null);
+  assert.equal(queued.nextRetryAt, null);
+  assert.equal(state.canRun('one', entry.id), true);
+});
