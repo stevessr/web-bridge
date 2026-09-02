@@ -1,7 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
-    extract::{Query, State, WebSocketUpgrade, ws::{Message, WebSocket}},
+    extract::{
+        ws::{Message, WebSocket},
+        Query, State, WebSocketUpgrade,
+    },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -11,8 +14,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use uuid::Uuid;
-use web_bridge_protocol::{ClientFrame, Command, Network, PROTOCOL_VERSION, RouteMode, ServerFrame};
+use web_bridge_protocol::{
+    ClientFrame, Command, Network, RouteMode, ServerFrame, PROTOCOL_VERSION,
+};
 
 use crate::{napcat, state::AppState};
 
@@ -29,7 +33,11 @@ async fn info_handler() -> Json<Value> {
     Json(json!({
         "name": "web-bridge-server",
         "protocol": PROTOCOL_VERSION,
-        "routing": {"qq":"server_only","matrix":"server_or_client","telegram":"server_or_client"}
+        "routing": {
+            "qq":"server_only",
+            "matrix":"server_or_client",
+            "telegram":"server_or_client"
+        }
     }))
 }
 
@@ -63,7 +71,15 @@ async fn client_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
     let mut events = state.events.subscribe();
 
-    if send_frame(&mut sink, &ServerFrame::Ready { protocol: PROTOCOL_VERSION }).await.is_err() {
+    if send_frame(
+        &mut sink,
+        &ServerFrame::Ready {
+            protocol: PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .is_err()
+    {
         return;
     }
 
@@ -85,7 +101,11 @@ async fn client_socket(socket: WebSocket, state: Arc<AppState>) {
             }
             outbound = events.recv() => {
                 match outbound {
-                    Ok(frame) => if send_frame(&mut sink, &frame).await.is_err() { break; },
+                    Ok(frame) => {
+                        if send_frame(&mut sink, &frame).await.is_err() {
+                            break;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => break,
                 }
@@ -96,7 +116,9 @@ async fn client_socket(socket: WebSocket, state: Arc<AppState>) {
 
 async fn handle_client_frame(frame: ClientFrame, state: &Arc<AppState>) {
     match frame {
-        ClientFrame::Ping { nonce } => { let _ = state.events.send(ServerFrame::Pong { nonce }); }
+        ClientFrame::Ping { nonce } => {
+            let _ = state.events.send(ServerFrame::Pong { nonce });
+        }
         ClientFrame::Hello { protocol, .. } if protocol != PROTOCOL_VERSION => {
             let _ = state.events.send(ServerFrame::Error {
                 request_id: None,
@@ -105,8 +127,16 @@ async fn handle_client_frame(frame: ClientFrame, state: &Arc<AppState>) {
             });
         }
         ClientFrame::Hello { .. } => {}
-        ClientFrame::Command { request_id, command } => match command {
-            Command::SendMessage { account, route, conversation, parts } => {
+        ClientFrame::Command {
+            request_id,
+            command,
+        } => match command {
+            Command::SendMessage {
+                account,
+                route,
+                conversation,
+                parts,
+            } => {
                 if !account.network.permits_route(route) {
                     let _ = state.events.send(ServerFrame::Error {
                         request_id: Some(request_id),
@@ -136,14 +166,22 @@ async fn handle_client_frame(frame: ClientFrame, state: &Arc<AppState>) {
                         let _ = state.events.send(ServerFrame::Ack { request_id });
                     }
                     Ok(_) => {
-                        let _ = state.events.send(ServerFrame::Error { request_id: Some(request_id), code: "qq_disconnected".into(), message: "NapCat writer closed".into() });
+                        let _ = state.events.send(ServerFrame::Error {
+                            request_id: Some(request_id),
+                            code: "qq_disconnected".into(),
+                            message: "NapCat writer closed".into(),
+                        });
                     }
                     Err(message) => {
-                        let _ = state.events.send(ServerFrame::Error { request_id: Some(request_id), code: "unsupported_message".into(), message: message.into() });
+                        let _ = state.events.send(ServerFrame::Error {
+                            request_id: Some(request_id),
+                            code: "unsupported_message".into(),
+                            message: message.into(),
+                        });
                     }
                 }
             }
-        }
+        },
     }
 }
 
@@ -151,7 +189,11 @@ async fn napcat_socket(socket: WebSocket, state: Arc<AppState>, self_id: String)
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     state.qq.insert(self_id.clone(), tx);
-    let _ = state.events.send(ServerFrame::ProviderState { network: Network::Qq, account_id: self_id.clone(), online: true });
+    let _ = state.events.send(ServerFrame::ProviderState {
+        network: Network::Qq,
+        account_id: self_id.clone(),
+        online: true,
+    });
     info!(qq = %self_id, "NapCat connected");
 
     loop {
@@ -164,20 +206,25 @@ async fn napcat_socket(socket: WebSocket, state: Arc<AppState>, self_id: String)
                         if let Some(message) = napcat::event_to_message(&value) {
                             let _ = state.events.send(ServerFrame::Message { message });
                         }
-                        // Action responses currently do not need a separate client frame;
-                        // request echo correlation is reserved for the durable command ledger.
+                        // OneBot action responses are consumed by the future durable command ledger.
                     }
                     Err(err) => warn!(qq = %self_id, %err, "invalid OneBot JSON"),
                 }
             }
             Some(outgoing) = rx.recv() => {
-                if sink.send(Message::Text(outgoing.into())).await.is_err() { break; }
+                if sink.send(Message::Text(outgoing.into())).await.is_err() {
+                    break;
+                }
             }
         }
     }
 
     state.qq.remove(&self_id);
-    let _ = state.events.send(ServerFrame::ProviderState { network: Network::Qq, account_id: self_id.clone(), online: false });
+    let _ = state.events.send(ServerFrame::ProviderState {
+        network: Network::Qq,
+        account_id: self_id.clone(),
+        online: false,
+    });
     info!(qq = %self_id, "NapCat disconnected");
 }
 
@@ -190,7 +237,9 @@ where
 }
 
 fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
-    if expected.is_empty() { return true; }
+    if expected.is_empty() {
+        return true;
+    }
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
