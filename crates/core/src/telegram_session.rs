@@ -62,7 +62,8 @@ impl RusqliteSession {
         }
 
         {
-            let mut statement = connection.prepare("SELECT option_json FROM telegram_dc_options")?;
+            let mut statement =
+                connection.prepare("SELECT option_json FROM telegram_dc_options")?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             for row in rows {
                 let option: DcOption = serde_json::from_str(&row?)?;
