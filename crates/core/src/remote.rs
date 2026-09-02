@@ -78,6 +78,18 @@ impl PendingRemoteRequest {
             Command::SendMessage { account, .. } => {
                 Self::new("send message", Some(account.clone()))
             }
+            Command::ListConversations { account, .. } => {
+                Self::new("list conversations", Some(account.clone()))
+            }
+            Command::ListMessages { account, .. } => {
+                Self::new("list messages", Some(account.clone()))
+            }
+            Command::GetCursor { account, .. } => {
+                Self::new("read sync cursor", Some(account.clone()))
+            }
+            Command::SetCursor { account, .. } => {
+                Self::new("write sync cursor", Some(account.clone()))
+            }
         }
     }
 
@@ -332,7 +344,10 @@ fn apply_server_frame(
         }
         ServerFrame::AccountChanged { account } => mirror_account(state, account),
         ServerFrame::AccountRemoved { account } => remove_server_mirror(state, account),
-        ServerFrame::Ack { request_id } => {
+        ServerFrame::Conversations { request_id, .. }
+        | ServerFrame::Messages { request_id, .. }
+        | ServerFrame::Cursor { request_id, .. }
+        | ServerFrame::Ack { request_id } => {
             pending.remove(request_id);
         }
         ServerFrame::Error {
@@ -659,5 +674,45 @@ mod tests {
         let context = metadata.context();
         assert_eq!(context, "Matrix login for matrix:matrix-a");
         assert!(!context.contains("do-not-log-this"));
+    }
+
+    #[test]
+    fn pending_metadata_never_contains_cursor_values() {
+        let metadata = PendingRemoteRequest::from_command(&Command::SetCursor {
+            account: account(Network::Telegram, "telegram-a"),
+            key: "sync".into(),
+            value: "do-not-log-this-cursor".into(),
+        });
+        let context = metadata.context();
+        assert_eq!(context, "write sync cursor for telegram:telegram-a");
+        assert!(!context.contains("do-not-log-this-cursor"));
+    }
+
+    #[test]
+    fn history_response_completes_pending_request() {
+        let state = client_state();
+        let request_id = Uuid::new_v4();
+        let pending = DashMap::new();
+        let account = account(Network::Matrix, "history");
+        pending.insert(
+            request_id,
+            PendingRemoteRequest::from_command(&Command::GetCursor {
+                account: account.clone(),
+                key: "sync".into(),
+            }),
+        );
+
+        apply_server_frame(
+            &state,
+            &pending,
+            ServerFrame::Cursor {
+                request_id,
+                account,
+                key: "sync".into(),
+                value: Some("cursor".into()),
+            },
+        );
+
+        assert!(!pending.contains_key(&request_id));
     }
 }
