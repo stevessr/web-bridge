@@ -169,6 +169,7 @@ prepare_main_shim() {
   USE_MAIN_SHIM=1
   echo "[web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)"
   echo "[web-bridge] shadow executable: $SHADOW_QQ_BIN"
+  echo "[web-bridge] Chromium sandbox remains enabled; no bubblewrap/user namespace is used"
   return 0
 }
 
