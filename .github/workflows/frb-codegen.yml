@@ -49,7 +49,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock client/pubspec.lock client/lib/src/rust client/rust/src client/flutter_rust_bridge.yaml
+          git add Cargo.lock client/pubspec.lock client/lib/src/rust client/rust/src client/rust/Cargo.toml client/pubspec.yaml client/flutter_rust_bridge.yaml
           git commit -m "chore(client): regenerate FRB bindings and lock dependencies"
           git pull --rebase origin feat/napcat-rust-unified-v2
           git push origin HEAD:feat/napcat-rust-unified-v2
