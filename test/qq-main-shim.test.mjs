@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,40 +14,16 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
   assert.equal(original.main, './application/app_launcher/index.js');
 });
 
-test('loader injects remote debugging switches before loading original QQ main', () => {
-  const calls = [];
-  const required = [];
-  const app = {
-    commandLine: {
-      removeSwitch(name) { calls.push(['remove', name]); },
-      appendSwitch(name, value) { calls.push(['append', name, value]); }
-    }
-  };
+test('loader exposes Electron webContents.debugger before loading original QQ main', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
-  const context = {
-    process: {
-      env: { WEB_BRIDGE_CDP_HOST: '127.0.0.1', WEB_BRIDGE_CDP_PORT: '33677' },
-      resourcesPath: '/tmp/qq-shadow/resources',
-      stderr: { write() {} }
-    },
-    require(name) {
-      if (name === 'node:path') return { join: (...parts) => parts.join('/').replaceAll('//', '/'), isAbsolute: (p) => p.startsWith('/'), resolve: (...parts) => parts.join('/').replaceAll('//', '/') };
-      if (name === 'electron') return { app };
-      required.push(name);
-      return {};
-    },
-    setTimeout(fn) { fn(); },
-    global: {}
-  };
-  vm.runInNewContext(source, context);
-  assert.deepEqual(calls, [
-    ['remove', 'remote-debugging-address'],
-    ['remove', 'remote-debugging-port'],
-    ['append', 'remote-debugging-address', '127.0.0.1'],
-    ['append', 'remote-debugging-port', '33677']
-  ]);
-  assert.equal(required.length, 1);
-  assert.match(required[0], /application\/app_launcher\/index\.js$/);
+  assert.match(source, /webContents\.getAllWebContents\(\)/);
+  assert.match(source, /webContents\.fromId/);
+  assert.match(source, /target\.debugger\.attach\('1\.3'\)/);
+  assert.match(source, /target\.debugger\.sendCommand/);
+  assert.match(source, /QQ webContents\.debugger bridge listening/);
+  assert.match(source, /require\(entry\)/);
+  assert.doesNotMatch(source, /appendSwitch\('remote-debugging-port'/);
+  assert.doesNotMatch(source, /--no-sandbox/);
 });
 
 test('shadow distribution keeps Chromium outside a nested user namespace', async () => {
