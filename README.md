@@ -75,7 +75,7 @@ Current Linux QQ builds such as `3.2.33-52892` can reject Electron's `--inspect-
 5. the loader calls `app.commandLine.appendSwitch('remote-debugging-address', ...)` and `app.commandLine.appendSwitch('remote-debugging-port', ...)` before loading QQ's original main entry;
 6. the real `/opt/QQ` tree is **never written or modified**.
 
-Electron derives `process.resourcesPath` from the real executable path. Using a real temporary executable copy is therefore enough to make Electron select the shadow `resources` directory. This avoids Bubblewrap entirely: no nested user namespace, no `/dev/null` breakage, and Chromium keeps its normal Linux zygote/renderer sandbox.
+Electron derives `process.resourcesPath` from the real executable path. Using a real temporary executable copy is therefore enough to make Electron select the shadow `resources` directory. This avoids Bubblewrap entirely: unprivileged Bubblewrap requires a user namespace, while Chromium also wants to create its Linux namespace sandbox. Nesting the two caused `/dev/null` visibility problems and a zygote `Invalid argument (22)` crash on QQ `3.2.33-52892`. The shadow launcher introduces no mount/user namespace, so Chromium keeps its normal Linux zygote/renderer sandbox.
 
 A successful startup should contain lines similar to:
 
