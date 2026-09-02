@@ -16,161 +16,287 @@ export function buildShimPackage(packageJson, loaderEntry) {
 
 export function buildLoaderSource(originalMain) {
   if (typeof originalMain !== 'string' || !originalMain.trim()) throw new Error('originalMain is required');
-  return `'use strict';\n` +
-    `const path = require('node:path');\n` +
-    `const net = require('node:net');\n` +
-    `const { app, webContents } = require('electron');\n` +
-    `const originalMain = ${JSON.stringify(originalMain)};\n` +
-    `const host = process.env.WEB_BRIDGE_CDP_HOST || '127.0.0.1';\n` +
-    `const port = Number(process.env.WEB_BRIDGE_CDP_PORT || 0);\n` +
-    `const token = process.env.WEB_BRIDGE_QQ_SHIM_TOKEN || '';\n` +
-    `if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');\n` +
-    `function targetInfo(wc) {\n` +
-    `  if (!wc || wc.isDestroyed()) return null;\n` +
-    `  let kind = ''; let title = ''; let url = ''; let visible = false; let focused = false;\n` +
-    `  try { kind = wc.getType?.() || ''; } catch {}\n` +
-    `  if (kind === 'devTools') return null;\n` +
-    `  try { title = wc.getTitle?.() || ''; } catch {}\n` +
-    `  try { url = wc.getURL?.() || ''; } catch {}\n` +
-    `  try { const owner = wc.getOwnerBrowserWindow?.(); visible = Boolean(owner?.isVisible?.()); focused = Boolean(owner?.isFocused?.()); } catch {}\n` +
-    `  return { id: String(wc.id), type: 'page', title: title || 'QQ NT', url, kind, visible, focused };\n` +
-    `}\n` +
-    `function targetRank(info) {\n` +
-    `  let score = 0;\n` +
-    `  const haystack = (info?.title || '') + ' ' + (info?.url || '');\n` +
-    `  if (/\\#\\/main\\/(message|contact|setting)|\\#\\/main\\b/i.test(info?.url || '')) score += 5000;\n` +
-    `  if (/chatPoolWin=1|\\#\\/chat/i.test(info?.url || '')) score += 1200;\n` +
-    `  if (info?.visible) score += 1000;\n` +
-    `  if (info?.focused) score += 500;\n` +
-    `  if (info?.kind === 'window') score += 250;\n` +
-    `  else if (['browserView', 'webview', 'offscreen'].includes(info?.kind)) score += 120;\n` +
-    `  if (info?.url && info.url !== 'about:blank') score += 50;\n` +
-    `  if (/qq|tencent/i.test(haystack)) score += 25;\n` +
-    `  if (/hiddenWindow|hiddenPoolBaseWin/i.test(info?.url || '')) score -= 2000;\n` +
-    `  if (/\\#\\/blank|about:blank/i.test(info?.url || '')) score -= 1000;\n` +
-    `  return score;\n` +
-    `}\n` +
-    `function debuggerCandidates(requestedId = '') {\n` +
-    `  const candidates = webContents.getAllWebContents().map((wc) => ({ wc, info: targetInfo(wc) })).filter((item) => item.info);\n` +
-    `  candidates.sort((a, b) => targetRank(b.info) - targetRank(a.info));\n` +
-    `  if (requestedId) {\n` +
-    `    const index = candidates.findIndex((item) => item.info.id === String(requestedId));\n` +
-    `    if (index > 0) candidates.unshift(candidates.splice(index, 1)[0]);\n` +
-    `  }\n` +
-    `  return candidates;\n` +
-    `}\n` +
-    `function startDebuggerBridge() {\n` +
-    `  const server = net.createServer((socket) => {\n` +
-    `    socket.setNoDelay(true);\n` +
-    `    socket.setEncoding('utf8');\n` +
-    `    let buffer = '';\n` +
-    `    let target = null;\n` +
-    `    let ownsDebugger = false;\n` +
-    `    let cleaned = false;\n` +
-    `    const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\\n'); };\n` +
-    `    const onDebuggerMessage = (_event, method, params, sessionId) => {\n` +
-    `      const message = { method, params: params || {} };\n` +
-    `      if (sessionId) message.sessionId = sessionId;\n` +
-    `      send(message);\n` +
-    `    };\n` +
-    `    const onDebuggerDetach = (_event, reason) => {\n` +
-    `      send({ method: '__webBridgeShim.detached', params: { reason: reason || 'detached' } });\n` +
-    `      socket.end();\n` +
-    `    };\n` +
-    `    const cleanup = () => {\n` +
-    `      if (cleaned) return; cleaned = true;\n` +
-    `      const current = target; const owned = ownsDebugger;\n` +
-    `      target = null; ownsDebugger = false;\n` +
-    `      if (current && !current.isDestroyed()) {\n` +
-    `        try { current.debugger.removeListener('message', onDebuggerMessage); } catch {}\n` +
-    `        try { current.debugger.removeListener('detach', onDebuggerDetach); } catch {}\n` +
-    `        if (owned) { try { if (current.debugger.isAttached()) current.debugger.detach(); } catch {} }\n` +
-    `      }\n` +
-    `    };\n` +
-    `    function tryAttachCandidate(wc) {\n` +
-    `      if (!wc || wc.isDestroyed()) throw new Error('renderer target no longer exists');\n` +
-    `      let owns = false;\n` +
-    `      if (!wc.debugger.isAttached()) {\n` +
-    `        try {\n` +
-    `          wc.debugger.attach('1.3');\n` +
-    `          owns = true;\n` +
-    `        } catch (versionError) {\n` +
-    `          if (wc.debugger.isAttached()) return { wc, owns: false };\n` +
-    `          try {\n` +
-    `            wc.debugger.attach();\n` +
-    `            owns = true;\n` +
-    `          } catch (attachError) {\n` +
-    `            throw attachError?.message ? attachError : versionError;\n` +
-    `          }\n` +
-    `        }\n` +
-    `      }\n` +
-    `      return { wc, owns };\n` +
-    `    }\n` +
-    `    async function handle(message) {\n` +
-    `      const id = message && message.id;\n` +
-    `      if (token && message?.token !== token) { send({ id, error: { code: -32001, message: 'unauthorized shim debugger client' } }); return; }\n` +
-    `      if (message?.op === 'list') {\n` +
-    `        const targets = debuggerCandidates().map((item) => item.info);\n` +
-    `        send({ id, result: targets });\n` +
-    `        return;\n` +
-    `      }\n` +
-    `      if (message?.op === 'attach') {\n` +
-    `        cleanup(); cleaned = false;\n` +
-    `        const candidates = debuggerCandidates(message.targetId);\n` +
-    `        let lastError = null;\n` +
-    `        for (const candidate of candidates) {\n` +
-    `          if (socket.destroyed) return;\n` +
-    `          try {\n` +
-    `            const attached = tryAttachCandidate(candidate.wc);\n` +
-    `            target = attached.wc; ownsDebugger = attached.owns;\n` +
-    `            target.debugger.on('message', onDebuggerMessage);\n` +
-    `            target.debugger.on('detach', onDebuggerDetach);\n` +
-    `            send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target) } });\n` +
-    `            return;\n` +
-    `          } catch (error) {\n` +
-    `            lastError = error;\n` +
-    `          }\n` +
-    `        }\n` +
-    `        const summary = candidates.map((item) => item.info.kind + ':' + item.info.id + ':' + (item.info.url || '<empty>')).join(', ');\n` +
-    `        send({ id, error: { code: -32003, message: 'no usable renderer debugger target' + (lastError ? ': ' + (lastError.message || lastError) : '') + (summary ? ' [' + summary + ']' : ' [no webContents]') } });\n` +
-    `        return;\n` +
-    `      }\n` +
-    `      if (message?.method) {\n` +
-    `        if (!target || target.isDestroyed()) { send({ id, error: { code: -32004, message: 'no renderer target attached' } }); return; }\n` +
-    `        try {\n` +
-    `          const result = await target.debugger.sendCommand(message.method, message.params || {});\n` +
-    `          send({ id, result: result || {} });\n` +
-    `        } catch (error) {\n` +
-    `          send({ id, error: { code: -32005, message: error?.message || String(error) } });\n` +
-    `        }\n` +
-    `      }\n` +
-    `    }\n` +
-    `    socket.on('data', (chunk) => {\n` +
-    `      buffer += chunk;\n` +
-    `      if (buffer.startsWith('GET ') || buffer.startsWith('HEAD ')) { socket.end('HTTP/1.1 404 Not Found\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n'); return; }\n` +
-    `      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { socket.destroy(); return; }\n` +
-    `      let newline;\n` +
-    `      while ((newline = buffer.indexOf('\\n')) >= 0) {\n` +
-    `        const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);\n` +
-    `        if (!line) continue;\n` +
-    `        let message; try { message = JSON.parse(line); } catch { continue; }\n` +
-    `        Promise.resolve(handle(message)).catch((error) => send({ id: message?.id, error: { code: -32099, message: error?.message || String(error) } }));\n` +
-    `      }\n` +
-    `    });\n` +
-    `    socket.on('close', cleanup);\n` +
-    `    socket.on('error', cleanup);\n` +
-    `  });\n` +
-    `  server.on('error', (error) => process.stderr.write('[web-bridge] QQ debugger shim server error: ' + (error?.stack || error) + '\\n'));\n` +
-    `  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ webContents.debugger bridge listening: ' + host + ':' + port + ' (resourcesPath=' + process.resourcesPath + ')\\n'));\n` +
-    `  app.once('before-quit', () => { try { server.close(); } catch {} });\n` +
-    `}\n` +
-    `startDebuggerBridge();\n` +
-    `const appRoot = path.join(process.resourcesPath, 'app');\n` +
-    `const entry = path.isAbsolute(originalMain) ? originalMain : path.resolve(appRoot, originalMain);\n` +
-    `require(entry);\n` +
-    `setTimeout(() => {\n` +
-    `  try { if (global.launcher?.installPathPkgJson) global.launcher.installPathPkgJson.main = originalMain; } catch {}\n` +
-    `}, 0);\n`;
+  return String.raw`'use strict';
+const path = require('node:path');
+const net = require('node:net');
+const fs = require('node:fs/promises');
+const { app, webContents } = require('electron');
+const originalMain = ${JSON.stringify(originalMain)};
+const host = process.env.WEB_BRIDGE_CDP_HOST || '127.0.0.1';
+const port = Number(process.env.WEB_BRIDGE_CDP_PORT || 0);
+const token = process.env.WEB_BRIDGE_QQ_SHIM_TOKEN || '';
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');
+
+function targetInfo(wc) {
+  if (!wc || wc.isDestroyed()) return null;
+  let kind = ''; let title = ''; let url = ''; let visible = false; let focused = false; let debuggerAttached = false;
+  try { kind = wc.getType?.() || ''; } catch {}
+  if (kind === 'devTools') return null;
+  try { title = wc.getTitle?.() || ''; } catch {}
+  try { url = wc.getURL?.() || ''; } catch {}
+  try { const owner = wc.getOwnerBrowserWindow?.(); visible = Boolean(owner?.isVisible?.()); focused = Boolean(owner?.isFocused?.()); } catch {}
+  try { debuggerAttached = Boolean(wc.debugger?.isAttached?.()); } catch {}
+  return { id: String(wc.id), type: 'page', title: title || url || 'QQ NT', url, kind, visible, focused, debuggerAttached, transport: 'electron-webcontents' };
+}
+
+function targetRank(info) {
+  let score = 0;
+  const haystack = (info?.title || '') + ' ' + (info?.url || '');
+  if (/\#\/main\/(message|contact|setting)|\#\/main\b/i.test(info?.url || '')) score += 5000;
+  if (/chatPoolWin=1|\#\/chat/i.test(info?.url || '')) score += 1200;
+  if (info?.visible) score += 1000;
+  if (info?.focused) score += 500;
+  if (info?.kind === 'window') score += 250;
+  else if (['browserView', 'webview', 'offscreen'].includes(info?.kind)) score += 120;
+  if (info?.url && info.url !== 'about:blank') score += 50;
+  if (/qq|tencent/i.test(haystack)) score += 25;
+  if (/hiddenWindow|hiddenPoolBaseWin/i.test(info?.url || '')) score -= 2000;
+  if (/\#\/blank|about:blank/i.test(info?.url || '')) score -= 1000;
+  return score;
+}
+
+function candidates(requestedId = '') {
+  const items = webContents.getAllWebContents().map((wc) => ({ wc, info: targetInfo(wc) })).filter((item) => item.info);
+  items.sort((a, b) => targetRank(b.info) - targetRank(a.info));
+  if (requestedId) {
+    const index = items.findIndex((item) => item.info.id === String(requestedId));
+    if (index > 0) items.unshift(items.splice(index, 1)[0]);
+  }
+  return items;
+}
+
+function modifiersFromMask(mask) {
+  const value = Number(mask) || 0;
+  const result = [];
+  if (value & 1) result.push('alt');
+  if (value & 2) result.push('control');
+  if (value & 4) result.push('meta');
+  if (value & 8) result.push('shift');
+  return result;
+}
+
+function runtimeResult(value) {
+  if (value === undefined) return { result: { type: 'undefined' } };
+  if (value === null) return { result: { type: 'object', subtype: 'null', value: null } };
+  const type = typeof value;
+  if (type === 'bigint') return { result: { type: 'bigint', unserializableValue: String(value) + 'n' } };
+  if (type === 'number' && !Number.isFinite(value)) return { result: { type: 'number', unserializableValue: String(value) } };
+  return { result: { type, value } };
+}
+
+function startElectronBridge() {
+  const server = net.createServer((socket) => {
+    socket.setNoDelay(true);
+    socket.setEncoding('utf8');
+    let buffer = '';
+    let target = null;
+    let cleaned = false;
+    const scripts = [];
+    const bindings = new Set();
+    const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
+
+    const installBindings = async () => {
+      if (!target || target.isDestroyed() || !bindings.size) return;
+      const names = JSON.stringify([...bindings]);
+      await target.executeJavaScript('(function(){for(const n of ' + names + '){if(typeof globalThis[n]!=="function")globalThis[n]=function(){};}})()', true);
+    };
+    const installScripts = async () => {
+      if (!target || target.isDestroyed()) return;
+      await installBindings().catch(() => {});
+      for (const source of scripts) {
+        if (!target || target.isDestroyed()) return;
+        await target.executeJavaScript(source, true).catch(() => {});
+      }
+    };
+    const onDomReady = () => { installScripts().catch(() => {}); };
+    const onDidStartNavigation = (_event, _url, _inPlace, isMainFrame) => {
+      if (isMainFrame === false) return;
+      send({ method: 'Runtime.executionContextsCleared', params: {} });
+    };
+    const onDidNavigate = (_event, url) => {
+      send({ method: 'Page.frameNavigated', params: { frame: { id: 'main', url: String(url || '') } } });
+    };
+    const onDidNavigateInPage = (_event, url, isMainFrame) => {
+      if (isMainFrame === false) return;
+      send({ method: 'Page.frameNavigated', params: { frame: { id: 'main', url: String(url || '') } } });
+    };
+    const onGone = (_event, details) => {
+      send({ method: '__webBridgeShim.detached', params: { reason: details?.reason || 'render-process-gone' } });
+      socket.end();
+    };
+    const onDestroyed = () => socket.end();
+
+    const cleanupTarget = () => {
+      const current = target;
+      target = null;
+      if (!current || current.isDestroyed()) return;
+      try { current.removeListener('dom-ready', onDomReady); } catch {}
+      try { current.removeListener('did-start-navigation', onDidStartNavigation); } catch {}
+      try { current.removeListener('did-navigate', onDidNavigate); } catch {}
+      try { current.removeListener('did-navigate-in-page', onDidNavigateInPage); } catch {}
+      try { current.removeListener('render-process-gone', onGone); } catch {}
+      try { current.removeListener('destroyed', onDestroyed); } catch {}
+    };
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      cleanupTarget();
+    };
+
+    async function evaluate(params) {
+      const expression = String(params?.expression || '');
+      if (params?.returnByValue === false) {
+        const match = expression.match(/__WEB_BRIDGE__\?\.objectFor\((\d+)\)/);
+        if (match) return { result: { type: 'object', subtype: 'node', objectId: 'wb-node:' + match[1] } };
+        throw new Error('hybrid bridge only supports object handles for __WEB_BRIDGE__.objectFor()');
+      }
+      const value = await target.executeJavaScript(expression, true);
+      return runtimeResult(value);
+    }
+
+    async function setFileInputFiles(params) {
+      const match = String(params?.objectId || '').match(/^wb-node:(\d+)$/);
+      if (!match) throw new Error('hybrid bridge requires a web-bridge node objectId');
+      const files = Array.isArray(params?.files) ? params.files : [];
+      const payload = [];
+      for (const filename of files) {
+        const data = await fs.readFile(String(filename));
+        payload.push({ name: path.basename(String(filename)), base64: data.toString('base64') });
+      }
+      const nodeId = Number(match[1]);
+      const source = '(function(){' +
+        'const node=globalThis.__WEB_BRIDGE__?.objectFor(' + nodeId + ');' +
+        'if(!(node instanceof HTMLInputElement)||String(node.type).toLowerCase()!=="file")throw new Error("file input no longer exists");' +
+        'const dt=new DataTransfer();const items=' + JSON.stringify(payload) + ';' +
+        'for(const item of items){const binary=atob(item.base64);const bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);dt.items.add(new File([bytes],item.name,{type:"application/octet-stream"}));}' +
+        'node.files=dt.files;node.dispatchEvent(new Event("input",{bubbles:true}));node.dispatchEvent(new Event("change",{bubbles:true}));' +
+        'globalThis.__WEB_BRIDGE__?.markVisual(' + nodeId + ');return {count:dt.files.length};})()';
+      await target.executeJavaScript(source, true);
+      return {};
+    }
+
+    async function dispatchMouse(params) {
+      const typeMap = { mouseMoved: 'mouseMove', mousePressed: 'mouseDown', mouseReleased: 'mouseUp', mouseWheel: 'mouseWheel' };
+      const type = typeMap[params?.type];
+      if (!type) throw new Error('unsupported mouse event type: ' + String(params?.type || ''));
+      const event = {
+        type,
+        x: Math.round(Number(params?.x) || 0),
+        y: Math.round(Number(params?.y) || 0),
+        modifiers: modifiersFromMask(params?.modifiers)
+      };
+      if (type === 'mouseDown' || type === 'mouseUp') {
+        event.button = params?.button || 'left';
+        event.clickCount = Number(params?.clickCount) || 1;
+      }
+      if (type === 'mouseWheel') {
+        event.deltaX = Number(params?.deltaX) || 0;
+        event.deltaY = Number(params?.deltaY) || 0;
+        event.canScroll = true;
+      }
+      target.sendInputEvent(event);
+      return {};
+    }
+
+    async function dispatchKey(params) {
+      const kind = params?.type === 'keyUp' ? 'keyUp' : params?.type === 'char' ? 'char' : 'keyDown';
+      const keyCode = String(params?.key || params?.code || '');
+      if (!keyCode) throw new Error('keyCode is required');
+      target.sendInputEvent({ type: kind, keyCode, modifiers: modifiersFromMask(params?.modifiers), isAutoRepeat: Boolean(params?.autoRepeat) });
+      return {};
+    }
+
+    async function command(method, params) {
+      if (!target || target.isDestroyed()) throw new Error('no renderer target attached');
+      if (method === 'Runtime.enable' || method === 'Page.enable' || method === 'DOM.enable') return {};
+      if (method === 'Runtime.addBinding') {
+        const name = String(params?.name || '');
+        if (!name) throw new Error('binding name is required');
+        bindings.add(name);
+        await installBindings();
+        return {};
+      }
+      if (method === 'Page.addScriptToEvaluateOnNewDocument') {
+        const source = String(params?.source || '');
+        scripts.push(source);
+        return { identifier: 'web-bridge-script-' + scripts.length };
+      }
+      if (method === 'Runtime.evaluate') return evaluate(params || {});
+      if (method === 'Input.dispatchMouseEvent') return dispatchMouse(params || {});
+      if (method === 'Input.dispatchKeyEvent') return dispatchKey(params || {});
+      if (method === 'Input.insertText') {
+        await Promise.resolve(target.insertText(String(params?.text || '')));
+        return {};
+      }
+      if (method === 'DOM.setFileInputFiles') return setFileInputFiles(params || {});
+      throw Object.assign(new Error('unsupported by Electron hybrid bridge: ' + method), { code: -32601 });
+    }
+
+    async function handle(message) {
+      const id = message && message.id;
+      if (token && message?.token !== token) { send({ id, error: { code: -32001, message: 'unauthorized shim client' } }); return; }
+      if (message?.op === 'list') {
+        send({ id, result: candidates().map((item) => item.info) });
+        return;
+      }
+      if (message?.op === 'attach') {
+        cleanupTarget();
+        cleaned = false;
+        const selected = candidates(message.targetId)[0];
+        if (!selected?.wc || selected.wc.isDestroyed()) {
+          send({ id, error: { code: -32003, message: 'no usable Electron webContents target' } });
+          return;
+        }
+        target = selected.wc;
+        target.on('dom-ready', onDomReady);
+        target.on('did-start-navigation', onDidStartNavigation);
+        target.on('did-navigate', onDidNavigate);
+        target.on('did-navigate-in-page', onDidNavigateInPage);
+        target.on('render-process-gone', onGone);
+        target.on('destroyed', onDestroyed);
+        send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target), mode: 'electron-hybrid' } });
+        return;
+      }
+      if (message?.method) {
+        try {
+          const result = await command(message.method, message.params || {});
+          send({ id, result: result || {} });
+        } catch (error) {
+          send({ id, error: { code: error?.code || -32005, message: error?.message || String(error) } });
+        }
+      }
+    }
+
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      if (buffer.startsWith('GET ') || buffer.startsWith('HEAD ')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { socket.destroy(); return; }
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        Promise.resolve(handle(message)).catch((error) => send({ id: message?.id, error: { code: -32099, message: error?.message || String(error) } }));
+      }
+    });
+    socket.on('close', cleanup);
+    socket.on('error', cleanup);
+  });
+  server.on('error', (error) => process.stderr.write('[web-bridge] QQ Electron bridge server error: ' + (error?.stack || error) + '\n'));
+  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ Electron hybrid bridge listening: ' + host + ':' + port + ' (resourcesPath=' + process.resourcesPath + ')\n'));
+  app.once('before-quit', () => { try { server.close(); } catch {} });
+}
+
+startElectronBridge();
+const appRoot = path.join(process.resourcesPath, 'app');
+const entry = path.isAbsolute(originalMain) ? originalMain : path.resolve(appRoot, originalMain);
+require(entry);
+setTimeout(() => {
+  try { if (global.launcher?.installPathPkgJson) global.launcher.installPathPkgJson.main = originalMain; } catch {}
+}, 0);
+`;
 }
 
 export async function prepareMainShim({ packagePath, outputDir }) {
