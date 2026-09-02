@@ -63,6 +63,16 @@ pnpm dev:qq
 
 The launcher discovers QQ automatically and prints the local browser endpoint. It chooses a private random CDP port unless `WEB_BRIDGE_CDP_PORT` is explicitly set.
 
+Recent Linux QQ builds may accept Chromium command-line flags while failing to create the DevTools HTTP endpoint from `--remote-debugging-port` early enough for an external bridge. The launcher therefore starts QQ behind a **temporary random loopback Node inspector**, injects `remote-debugging-address` and `remote-debugging-port` through Electron's documented `app.commandLine` API before the app's main script runs, resumes QQ, and closes the bootstrap inspector shortly afterwards. The long-lived privileged interface remains the private loopback CDP endpoint.
+
+If a QQ/Electron build does not support the bootstrap inspector, the launcher kills the paused attempt and automatically retries with the traditional command-line CDP flags. To force the old behavior for troubleshooting:
+
+```bash
+WEB_BRIDGE_QQ_CDP_BOOTSTRAP=0 pnpm dev:qq
+```
+
+The bootstrap connect timeout can be adjusted with `WEB_BRIDGE_QQ_BOOTSTRAP_TIMEOUT_MS` (default `15000`).
+
 Inspect discovery candidates with:
 
 ```bash
@@ -117,6 +127,7 @@ The browser applies a patch only if `baseRevision` equals its current revision. 
 - file uploads use private temporary directories with size/TTL limits.
 - only one browser controls QQ by default; other sessions are read-only.
 - CDP is treated as a privileged internal interface and is loopback-only by default.
+- the Electron Node inspector used during Linux QQ launch is loopback-only, uses a random ephemeral port, and is closed after the CDP switches are injected.
 
 ## Operational endpoints
 
@@ -139,6 +150,7 @@ npm install --ignore-scripts
 npm test
 node --check src/host.mjs
 node --check src/injected.mjs
+node --check src/electron-cdp-bootstrap.mjs
 node --check public/client.js
 bash -n scripts/qq-web-bridge.sh
 ```
