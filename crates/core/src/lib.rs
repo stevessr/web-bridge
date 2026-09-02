@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod commands;
 pub mod napcat;
 pub mod providers;
 pub mod remote;
