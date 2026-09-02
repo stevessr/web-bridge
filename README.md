@@ -36,12 +36,14 @@ The client never receives QQ script bundles, preload objects, arbitrary debugger
 - automatic renderer target attach and reconnect
 - sanitized initial DOM snapshot
 - **revisioned incremental DOM/state/style patches**
+- push-first dirty notifications with frame-paced patch coalescing
 - snapshot resync on missed revisions, navigation, patch overflow or slow clients
 - Shadow DOM reconstruction
 - computed CSS and `@font-face` mirroring
 - opaque image/font/media resource relay with cache limits and byte-range responses
 - element-local canvas PNG fallback
 - mouse, right-click, hover, wheel, keyboard, paste and Chinese IME input
+- focus-preserving background input when the QQ window is not already focused
 - select controls and HTML file inputs
 - browser file upload → host temp file → real QQ event chain
 - basic media state mirroring
@@ -52,6 +54,7 @@ The client never receives QQ script bundles, preload objects, arbitrary debugger
 - `/healthz`, `/readyz`, Prometheus `/metrics`
 - graceful shutdown and QQ/bridge pair supervision
 - systemd user-service and Caddy deployment examples
+- headless Docker/Xvfb deployment with automatic official QQ download and persistent QQ data volume
 
 ## Quick start
 
@@ -74,10 +77,11 @@ A second host test showed that `webContents.debugger.attach()` succeeds but `deb
 Instead the QQ Main shim exposes a private, per-launch authenticated loopback transport backed by ordinary Electron `webContents` APIs:
 
 - `Runtime.evaluate` → `webContents.executeJavaScript()`
-- pointer/keyboard input → `webContents.sendInputEvent()`
-- text input → `webContents.insertText()`
+- pointer/keyboard input → native `webContents.sendInputEvent()` only when QQ is already focused
+- background pointer/keyboard input → renderer-side DOM event dispatch, avoiding BrowserWindow focus theft
+- text input → native `webContents.insertText()` when focused, renderer-side insertion when backgrounded
 - navigation events → Electron `webContents` events
-- mutation wakeups → a lightweight synthetic `Runtime.bindingCalled` poll
+- mutation wakeups → push-based synthetic `Runtime.bindingCalled` with a low-frequency safety poll
 - file inputs → a controlled renderer-side `DataTransfer` bridge
 
 The host keeps the same small CDP-shaped internal interface, so the DOM mirror does not need a second implementation.
@@ -98,7 +102,7 @@ A successful startup should contain lines similar to:
 ```text
 [web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)
 [web-bridge] using Electron hybrid transport; QQ DevTools Runtime is not required
-[web-bridge] QQ Electron hybrid bridge listening: 127.0.0.1:33677 (...)
+[web-bridge] QQ Electron hybrid bridge listening: 127.0.0.1:33677 (push-sync, focus-preserving, ...)
 {"level":"info","message":"attached to QQ renderer",...}
 ```
 
@@ -110,10 +114,17 @@ WEB_BRIDGE_QQ_MAIN_SHIM=1 pnpm dev:qq      # require it; fail instead of falling
 WEB_BRIDGE_QQ_MAIN_SHIM=0 pnpm dev:qq      # disable it; try ordinary Chromium CDP flags
 ```
 
-The synthetic mutation wakeup interval defaults to 120 ms and can be tuned when needed:
+The normal mutation path is push-based. A 1000 ms safety poll remains as a fallback and can be tuned or disabled:
 
 ```bash
-WEB_BRIDGE_SHIM_POLL_MS=120 pnpm dev:qq
+WEB_BRIDGE_SHIM_POLL_MS=1000 pnpm dev:qq
+WEB_BRIDGE_SHIM_POLL_MS=0 pnpm dev:qq
+```
+
+Patch coalescing defaults to 16 ms:
+
+```bash
+WEB_BRIDGE_PATCH_THROTTLE_MS=16 pnpm dev:qq
 ```
 
 The old Node-inspector bootstrap is retained only for diagnostics on compatible Electron builds and is off by default:
@@ -135,6 +146,26 @@ QQ_BIN=/opt/QQ/qq pnpm dev:qq
 ```
 
 QQ must be fully closed before `pnpm dev:qq`; Electron single-instance forwarding otherwise prevents the fresh process from receiving the bridge setup.
+
+## Headless Docker
+
+The repository contains an automated `Dockerfile` and `docker-compose.yml`. The image downloads the matching official Tencent Linux QQ `.deb` during build, runs QQ inside a private Xvfb display, and persists QQ state in a volume.
+
+```bash
+export WEB_BRIDGE_AUTH_TOKEN="$(openssl rand -hex 32)"
+docker compose build
+docker compose up -d
+```
+
+Compose keeps QQ login/session data in the named `qq-data` volume mounted at:
+
+```text
+/home/webbridge/.config/QQ
+```
+
+Do not use `docker compose down -v` unless you intentionally want to delete the QQ login state. A host data disk can be bind-mounted to the same path after giving UID/GID `10001` ownership.
+
+The default published address is `127.0.0.1:8080`. Put Caddy/Nginx in front of it for remote access. See [`docs/DOCKER.md`](docs/DOCKER.md) for official-package override, persistent bind mounts, multi-arch builds and first-login guidance.
 
 ## Exposing it to another machine
 
@@ -175,6 +206,7 @@ The browser applies a patch only if `baseRevision` equals its current revision. 
 - input messages are schema-normalized, size-limited and rate-limited.
 - file uploads use private temporary directories with size/TTL limits.
 - only one browser controls QQ by default; other sessions are read-only.
+- background remote input does not call `BrowserWindow.focus()` or `webContents.focus()`.
 - the QQ Electron bridge is loopback-only and requires a random per-launch token.
 - the Linux main-entry shim and shadow executable are user-owned, short-lived, and deleted when the launcher exits; `/opt/QQ` is not modified.
 - the shadow launcher does not disable Chromium's normal renderer sandbox.
@@ -191,6 +223,8 @@ GET /metrics   Prometheus metrics (authenticated by default)
 
 DOM-native QQ UI is the primary target. Canvas currently uses element-local image snapshots. High-frequency WebGL surfaces and Electron/OS-native dialogs are not reconstructed as DOM. HTML file inputs are bridged, but an app that exclusively invokes `dialog.showOpenDialog()` from Electron Main may still need a native-dialog adapter.
 
+When QQ is already the foreground window, native Electron input is used. When QQ is in the background, the bridge deliberately uses renderer-side synthetic events/text insertion to preserve the local user's foreground focus. Applications that explicitly reject untrusted DOM events may need a future app-specific background-input adapter.
+
 The shadow launcher depends on the packaged Electron layout (`<qq>/resources/app/package.json`) and on Electron deriving `process.resourcesPath` from the copied executable. If that layout changes, `auto` mode falls back to executable command-line switches and prints a diagnostic; `WEB_BRIDGE_QQ_MAIN_SHIM=1` converts the condition into a hard failure.
 
 ## Development
@@ -205,6 +239,8 @@ node --check src/qq-main-shim.mjs
 node --check src/electron-cdp-bootstrap.mjs
 node --check public/client.js
 bash -n scripts/qq-web-bridge.sh
+bash -n deploy/download-linuxqq.sh
+bash -n deploy/docker-entrypoint.sh
 ```
 
-This project does not patch or redistribute QQ NT. You are responsible for complying with QQ's terms and applicable law.
+This project does not patch QQ NT. Local Docker builds download QQ from Tencent at build time. If you redistribute a prebuilt image containing QQ, you are responsible for Tencent's redistribution terms and applicable law.
