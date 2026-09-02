@@ -63,7 +63,10 @@ async fn napcat_upgrade(
     if !bearer_matches(&headers, &state.config.napcat_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let self_id = match headers.get("x-self-id").and_then(|value| value.to_str().ok()) {
+    let self_id = match headers
+        .get("x-self-id")
+        .and_then(|value| value.to_str().ok())
+    {
         Some(value) if !value.is_empty() => value.to_owned(),
         _ => return (StatusCode::BAD_REQUEST, "missing X-Self-ID").into_response(),
     };
@@ -170,9 +173,7 @@ async fn handle_command(
             disconnect_provider(state, &account).await;
             state.qq.remove(&account);
             if state.accounts.remove(&account).is_some() {
-                let _ = state
-                    .events
-                    .send(ServerFrame::AccountRemoved { account });
+                let _ = state.events.send(ServerFrame::AccountRemoved { account });
                 vec![ServerFrame::Ack { request_id }]
             } else {
                 vec![ServerFrame::Error {
@@ -277,7 +278,11 @@ async fn handle_command(
             match telegram::submit_password(Arc::clone(state), &account, password).await {
                 Ok(_) => vec![ServerFrame::Ack { request_id }],
                 Err(error) => {
-                    vec![provider_error(request_id, "telegram_password_failed", error)]
+                    vec![provider_error(
+                        request_id,
+                        "telegram_password_failed",
+                        error,
+                    )]
                 }
             }
         }
@@ -303,7 +308,9 @@ async fn handle_command(
 
             let result = match account.network {
                 Network::Qq => send_qq(state, &account, &conversation, &parts, request_id).await,
-                Network::Matrix => matrix::send_message(state, &account, &conversation, &parts).await,
+                Network::Matrix => {
+                    matrix::send_message(state, &account, &conversation, &parts).await
+                }
                 Network::Telegram => {
                     telegram::send_message(state, &account, &conversation, &parts).await
                 }
@@ -340,10 +347,9 @@ async fn disconnect_provider(state: &CoreState, account: &AccountRef) {
     match account.network {
         Network::Qq => {
             state.qq.remove(account);
-            if let Some(snapshot) =
-                state
-                    .accounts
-                    .set_status(account, AccountStatus::Offline, None)
+            if let Some(snapshot) = state
+                .accounts
+                .set_status(account, AccountStatus::Offline, None)
             {
                 let _ = state
                     .events
