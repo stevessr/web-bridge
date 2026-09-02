@@ -33,7 +33,7 @@ pub struct TelegramHandle {
 enum LoginStage {
     None,
     Code(LoginToken),
-    Password(PasswordToken),
+    Password(Box<PasswordToken>),
     Authorized,
 }
 
@@ -133,7 +133,7 @@ pub async fn submit_code(
         }
         Err(SignInError::PasswordRequired(token)) => {
             let hint = token.hint().map(ToOwned::to_owned);
-            *telegram.login.lock().await = LoginStage::Password(token);
+            *telegram.login.lock().await = LoginStage::Password(Box::new(token));
             let snapshot = state
                 .accounts
                 .get(account)
@@ -163,7 +163,7 @@ pub async fn submit_password(
 
     match telegram
         .client
-        .check_password(token, password.as_bytes())
+        .check_password(*token, password.as_bytes())
         .await
     {
         Ok(_) => {
@@ -171,7 +171,7 @@ pub async fn submit_password(
             finish_authorized(state, account.clone(), telegram).await
         }
         Err(SignInError::InvalidPassword(token)) => {
-            *telegram.login.lock().await = LoginStage::Password(token);
+            *telegram.login.lock().await = LoginStage::Password(Box::new(token));
             mark_error(&state, account, "invalid Telegram 2FA password");
             bail!("invalid Telegram 2FA password")
         }
@@ -192,7 +192,7 @@ pub async fn send_message(
     let body = text_body(parts)?;
 
     let peer_ref = if let Some(peer) = telegram.peers.get(&conversation.id) {
-        peer.value().clone()
+        *peer.value()
     } else if let Some(username) = conversation.id.strip_prefix('@') {
         let peer = telegram
             .client
