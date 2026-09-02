@@ -16,7 +16,9 @@ pub struct CoreRuntime {
 
 impl CoreRuntime {
     pub fn new(role: RuntimeRole, config: CoreConfig) -> Self {
-        Self { state: Arc::new(CoreState::new(role, config)) }
+        Self {
+            state: Arc::new(CoreState::new(role, config)),
+        }
     }
 
     pub fn state(&self) -> Arc<CoreState> {
