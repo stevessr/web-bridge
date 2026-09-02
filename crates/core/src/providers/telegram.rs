@@ -353,9 +353,10 @@ fn get_handle(state: &CoreState, account: &AccountRef) -> Result<Arc<TelegramHan
 }
 
 fn mark_error(state: &CoreState, account: &AccountRef, error: &str) {
-    if let Some(snapshot) = state
-        .accounts
-        .set_status(account, AccountStatus::Error, Some(error.to_owned()))
+    if let Some(snapshot) =
+        state
+            .accounts
+            .set_status(account, AccountStatus::Error, Some(error.to_owned()))
     {
         let _ = state
             .events
