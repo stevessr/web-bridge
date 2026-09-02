@@ -319,3 +319,61 @@ fn text_body(parts: &[MessagePart]) -> Result<String> {
     }
     Ok(body)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{accounts::RuntimeRole, state::CoreConfig};
+
+    async fn test_handle() -> Arc<MatrixHandle> {
+        let client = Client::builder()
+            .homeserver_url("http://127.0.0.1:9")
+            .build()
+            .await
+            .unwrap();
+        let task = tokio::spawn(std::future::pending::<()>());
+        Arc::new(MatrixHandle {
+            client,
+            sync_task: task.abort_handle(),
+        })
+    }
+
+    fn matrix(id: &str) -> AccountRef {
+        AccountRef {
+            network: Network::Matrix,
+            id: id.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnecting_one_matrix_account_keeps_the_other_online() {
+        let state = CoreState::new(RuntimeRole::Client, CoreConfig::default());
+        let account_a = matrix("matrix-a");
+        let account_b = matrix("matrix-b");
+        for account in [&account_a, &account_b] {
+            state
+                .accounts
+                .upsert(account.clone(), None, RouteMode::Client)
+                .unwrap();
+            state
+                .accounts
+                .set_status(account, AccountStatus::Online, None)
+                .unwrap();
+        }
+        state.matrix.insert(account_a.clone(), test_handle().await);
+        state.matrix.insert(account_b.clone(), test_handle().await);
+
+        disconnect(&state, &account_a);
+
+        assert!(!state.matrix.contains_key(&account_a));
+        assert!(state.matrix.contains_key(&account_b));
+        assert_eq!(
+            state.accounts.get(&account_a).unwrap().status,
+            AccountStatus::Offline
+        );
+        assert_eq!(
+            state.accounts.get(&account_b).unwrap().status,
+            AccountStatus::Online
+        );
+    }
+}
