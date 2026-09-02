@@ -4,14 +4,7 @@ use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{
-        Message,
-        client::IntoClientRequest,
-        http::{HeaderValue, header::AUTHORIZATION},
-    },
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 use web_bridge_protocol::{ClientFrame, Command, PROTOCOL_VERSION, ServerFrame};
 
@@ -29,20 +22,10 @@ impl RemoteBridge {
         token: &str,
         device_id: String,
     ) -> Result<Self> {
-        let mut request = endpoint
-            .into_client_request()
-            .context("invalid server WebSocket endpoint")?;
-        if !token.is_empty() {
-            request.headers_mut().insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {token}"))
-                    .context("invalid server token")?,
-            );
-        }
-
-        let (socket, _) = connect_async(request)
+        let endpoint = with_token(endpoint, token);
+        let (socket, _) = connect_async(&endpoint)
             .await
-            .context("connect web-bridge server")?;
+            .with_context(|| format!("connect web-bridge server at {endpoint}"))?;
         let (mut sink, mut stream) = socket.split();
         let (outgoing, mut outbound) = mpsc::unbounded_channel::<ClientFrame>();
 
@@ -158,6 +141,16 @@ fn mirror_account(state: &CoreState, snapshot: &web_bridge_protocol::AccountSnap
         snapshot.status,
         snapshot.last_error.clone(),
     );
+}
+
+fn with_token(endpoint: &str, token: &str) -> String {
+    if token.is_empty() {
+        endpoint.to_owned()
+    } else if endpoint.contains('?') {
+        format!("{endpoint}&token={token}")
+    } else {
+        format!("{endpoint}?token={token}")
+    }
 }
 
 pub fn ensure_client_role(state: &CoreState) -> Result<()> {
