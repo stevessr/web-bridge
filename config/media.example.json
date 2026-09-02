@@ -1,0 +1,99 @@
+{
+  "workDir": "../.web-bridge-media",
+  "pollIntervalSeconds": 600,
+  "maxItemsPerPoll": 4,
+  "maxAttempts": 4,
+  "retryBackoffSeconds": 900,
+  "dedupeScope": "global",
+  "ytDlpBinary": "yt-dlp",
+  "ffmpegBinary": "ffmpeg",
+  "ytDlpArgs": [
+    "--concurrent-fragments",
+    "4"
+  ],
+  "allowUnsafeYtDlpArgs": false,
+  "burnSubtitles": true,
+  "keepArtifacts": true,
+  "targetLanguage": "zh-CN",
+  "titleTemplate": "【中字】{{title}}",
+  "descriptionTemplate": "原视频：{{webpageUrl}}\n原作者：{{channel}}\n\n本视频由自动 ASR/翻译字幕流水线生成，请以原视频为准。",
+  "tags": [
+    "YouTube",
+    "字幕",
+    "搬运"
+  ],
+  "bilibiliAccount": "default",
+  "youtubeAccounts": [
+    {
+      "id": "youtube-main",
+      "sourceUrls": [
+        ":ytsubs"
+      ],
+      "cookiesFile": "../secrets/youtube-main.cookies.txt",
+      "maxItemsPerSource": 30,
+      "ytDlpArgs": [
+        "--sleep-requests",
+        "0.5"
+      ],
+      "bilibiliAccount": "default",
+      "tags": [
+        "自动烤肉"
+      ]
+    },
+    {
+      "id": "youtube-second",
+      "sourceUrls": [
+        ":ytsubs",
+        "https://www.youtube.com/@example/videos"
+      ],
+      "cookiesFile": "../secrets/youtube-second.cookies.txt",
+      "maxItemsPerSource": 20,
+      "ytDlpArgs": [],
+      "bilibiliAccount": "secondary",
+      "tags": []
+    }
+  ],
+  "asr": {
+    "backend": "local-faster-whisper",
+    "model": "large-v3",
+    "language": "auto",
+    "pythonBinary": "python3",
+    "localScript": "scripts/asr-faster-whisper.py",
+    "device": "auto",
+    "computeType": "auto",
+    "extraArgs": []
+  },
+  "translation": {
+    "backend": "openai-compatible",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "model": "gpt-4.1-mini",
+    "sourceLanguage": "auto",
+    "targetLanguage": "zh-CN",
+    "batchSegments": 36,
+    "extraBody": {}
+  },
+  "bilibili": {
+    "binary": "biliup",
+    "accounts": [
+      {
+        "id": "default",
+        "cookieFile": "../secrets/bilibili-default.json",
+        "tid": 17,
+        "copyright": 2,
+        "tags": [
+          "中字"
+        ],
+        "extraArgs": []
+      },
+      {
+        "id": "secondary",
+        "cookieFile": "../secrets/bilibili-secondary.json",
+        "tid": 17,
+        "copyright": 2,
+        "tags": [],
+        "extraArgs": []
+      }
+    ]
+  }
+}
