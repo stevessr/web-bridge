@@ -16,7 +16,10 @@ impl RuntimeRole {
     }
 
     pub const fn route_is_local(self, route: RouteMode) -> bool {
-        matches!((self, route), (Self::Server, RouteMode::Server) | (Self::Client, RouteMode::Client))
+        matches!(
+            (self, route),
+            (Self::Server, RouteMode::Server) | (Self::Client, RouteMode::Client)
+        )
     }
 }
 
@@ -27,7 +30,11 @@ pub struct AccountRegistry {
 
 impl AccountRegistry {
     pub fn list(&self) -> Vec<AccountSnapshot> {
-        let mut accounts: Vec<_> = self.entries.iter().map(|entry| entry.value().clone()).collect();
+        let mut accounts: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         accounts.sort_by(|a, b| {
             network_order(a.account.network)
                 .cmp(&network_order(b.account.network))
@@ -53,16 +60,24 @@ impl AccountRegistry {
         let previous = self.get(&account);
         let snapshot = AccountSnapshot {
             account: account.clone(),
-            display_name: display_name.or_else(|| previous.as_ref().and_then(|item| item.display_name.clone())),
+            display_name: display_name
+                .or_else(|| previous.as_ref().and_then(|item| item.display_name.clone())),
             route,
-            status: previous.as_ref().map(|item| item.status).unwrap_or(AccountStatus::Offline),
+            status: previous
+                .as_ref()
+                .map(|item| item.status)
+                .unwrap_or(AccountStatus::Offline),
             last_error: previous.and_then(|item| item.last_error),
         };
         self.entries.insert(account, snapshot.clone());
         Ok(snapshot)
     }
 
-    pub fn set_route(&self, account: &AccountRef, route: RouteMode) -> Result<AccountSnapshot, &'static str> {
+    pub fn set_route(
+        &self,
+        account: &AccountRef,
+        route: RouteMode,
+    ) -> Result<AccountSnapshot, &'static str> {
         if !account.network.permits_route(route) {
             return Err("QQ accounts must use server routing");
         }
@@ -108,7 +123,10 @@ mod tests {
         for id in ["10001", "10002"] {
             registry
                 .upsert(
-                    AccountRef { network: Network::Qq, id: id.into() },
+                    AccountRef {
+                        network: Network::Qq,
+                        id: id.into(),
+                    },
                     None,
                     RouteMode::Server,
                 )
@@ -122,9 +140,20 @@ mod tests {
         let registry = AccountRegistry::default();
         for network in [Network::Qq, Network::Matrix, Network::Telegram] {
             for suffix in ["a", "b"] {
-                let route = if network == Network::Qq { RouteMode::Server } else { RouteMode::Client };
+                let route = if network == Network::Qq {
+                    RouteMode::Server
+                } else {
+                    RouteMode::Client
+                };
                 registry
-                    .upsert(AccountRef { network, id: suffix.into() }, None, route)
+                    .upsert(
+                        AccountRef {
+                            network,
+                            id: suffix.into(),
+                        },
+                        None,
+                        route,
+                    )
                     .unwrap();
             }
         }
@@ -134,8 +163,13 @@ mod tests {
     #[test]
     fn qq_cannot_be_changed_to_client_route() {
         let registry = AccountRegistry::default();
-        let account = AccountRef { network: Network::Qq, id: "10001".into() };
-        registry.upsert(account.clone(), None, RouteMode::Server).unwrap();
+        let account = AccountRef {
+            network: Network::Qq,
+            id: "10001".into(),
+        };
+        registry
+            .upsert(account.clone(), None, RouteMode::Server)
+            .unwrap();
         assert!(registry.set_route(&account, RouteMode::Client).is_err());
     }
 }
