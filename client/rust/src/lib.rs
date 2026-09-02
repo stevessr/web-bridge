@@ -3,9 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use web_bridge_core::{CoreConfig, CoreRuntime, RuntimeRole, commands};
-use web_bridge_protocol::{
-    AccountRef, Command, Network, PROTOCOL_VERSION, RouteMode, ServerFrame,
-};
+use web_bridge_protocol::{AccountRef, Command, Network, PROTOCOL_VERSION, RouteMode, ServerFrame};
 
 static RUNTIME: OnceLock<CoreRuntime> = OnceLock::new();
 static EVENT_RECEIVER: OnceLock<Mutex<broadcast::Receiver<ServerFrame>>> = OnceLock::new();
@@ -185,7 +183,13 @@ fn account_route(account: &AccountRef) -> Result<RouteMode, String> {
         .into_iter()
         .find(|snapshot| snapshot.account == *account)
         .map(|snapshot| snapshot.route)
-        .ok_or_else(|| format!("account {}:{} is not registered", network_name(account.network), account.id))
+        .ok_or_else(|| {
+            format!(
+                "account {}:{} is not registered",
+                network_name(account.network),
+                account.id
+            )
+        })
 }
 
 fn network_name(network: Network) -> &'static str {
