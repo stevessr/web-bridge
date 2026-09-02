@@ -1,14 +1,10 @@
-mod napcat;
-mod state;
-mod web;
-
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, net::SocketAddr};
 
 use anyhow::{Context, Result};
-use state::{AppConfig, AppState};
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
+use web_bridge_core::{web, CoreConfig, CoreRuntime, RuntimeRole};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,18 +17,20 @@ async fn main() -> Result<()> {
         .parse()
         .context("invalid WEB_BRIDGE_BIND")?;
 
-    let config = AppConfig {
-        client_token: env::var("WEB_BRIDGE_CLIENT_TOKEN").unwrap_or_else(|_| "dev-client-token".into()),
-        napcat_token: env::var("WEB_BRIDGE_NAPCAT_TOKEN").unwrap_or_else(|_| "dev-napcat-token".into()),
-    };
+    let runtime = CoreRuntime::new(
+        RuntimeRole::Server,
+        CoreConfig {
+            client_token: env::var("WEB_BRIDGE_CLIENT_TOKEN").unwrap_or_else(|_| "dev-client-token".into()),
+            napcat_token: env::var("WEB_BRIDGE_NAPCAT_TOKEN").unwrap_or_else(|_| "dev-napcat-token".into()),
+        },
+    );
 
-    let state = Arc::new(AppState::new(config));
-    let app = web::router(state)
+    let app = web::router(runtime.state())
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
 
     let listener = TcpListener::bind(bind).await?;
-    info!(%bind, "web-bridge server listening");
+    info!(%bind, "web-bridge shared core running in server mode");
     axum::serve(listener, app).await?;
     Ok(())
 }

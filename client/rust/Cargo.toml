@@ -1,6 +1,6 @@
 [package]
 name = "web-bridge-client-core"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -10,5 +10,6 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 flutter_rust_bridge = "2.11.1"
-serde.workspace = true
+serde_json.workspace = true
+web-bridge-core = { path = "../../crates/core" }
 web-bridge-protocol = { path = "../../crates/protocol" }

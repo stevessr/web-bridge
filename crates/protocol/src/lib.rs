@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Network {
     Qq,
@@ -13,7 +13,7 @@ pub enum Network {
     Telegram,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteMode {
     Server,
@@ -29,10 +29,28 @@ impl Network {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AccountRef {
     pub network: Network,
     pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountStatus {
+    Offline,
+    Connecting,
+    Online,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountSnapshot {
+    pub account: AccountRef,
+    pub display_name: Option<String>,
+    pub route: RouteMode,
+    pub status: AccountStatus,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +102,19 @@ pub enum ClientFrame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
+    ListAccounts,
+    RegisterAccount {
+        account: AccountRef,
+        display_name: Option<String>,
+        route: RouteMode,
+    },
+    RemoveAccount {
+        account: AccountRef,
+    },
+    SetAccountRoute {
+        account: AccountRef,
+        route: RouteMode,
+    },
     SendMessage {
         account: AccountRef,
         route: RouteMode,
@@ -96,9 +127,11 @@ pub enum Command {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
     Ready { protocol: u16 },
+    Accounts { request_id: Option<Uuid>, accounts: Vec<AccountSnapshot> },
+    AccountChanged { account: AccountSnapshot },
+    AccountRemoved { account: AccountRef },
     Message { message: UnifiedMessage },
     Ack { request_id: Uuid },
     Error { request_id: Option<Uuid>, code: String, message: String },
     Pong { nonce: String },
-    ProviderState { network: Network, account_id: String, online: bool },
 }
