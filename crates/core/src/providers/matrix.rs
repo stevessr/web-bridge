@@ -13,6 +13,7 @@ use matrix_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::task::AbortHandle;
+use tracing::warn;
 use web_bridge_protocol::{
     AccountRef, AccountSnapshot, AccountStatus, ConversationKind, ConversationRef, MessagePart,
     Network, RouteMode, ServerFrame, UnifiedMessage,
@@ -288,6 +289,9 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
                 parts: vec![MessagePart::Text { text: body }],
                 raw,
             };
+            if let Err(error) = state.storage.store_message(&message) {
+                warn!(%error, "failed to persist Matrix message");
+            }
             let _ = state.events.send(ServerFrame::Message { message });
         }
     });
