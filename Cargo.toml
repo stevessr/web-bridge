@@ -20,7 +20,7 @@ dashmap = "6"
 futures-util = "0.3"
 grammers-client = "0.10.0"
 grammers-mtsender = "0.10.0"
-grammers-session = "0.10.0"
+grammers-session = { version = "0.10.0", default-features = false, features = ["serde"] }
 matrix-sdk = { version = "0.18.0", features = ["sqlite"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
