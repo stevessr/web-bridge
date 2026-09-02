@@ -3,12 +3,19 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'models/account_route.dart';
-import 'services/server_gateway.dart';
+import 'services/rust_core_bridge.dart';
 
-void main() => runApp(const WebBridgeApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final bridge = RustCoreBridge();
+  await bridge.init();
+  runApp(WebBridgeApp(bridge: bridge));
+}
 
 class WebBridgeApp extends StatelessWidget {
-  const WebBridgeApp({super.key});
+  const WebBridgeApp({required this.bridge, super.key});
+
+  final RustCoreBridge bridge;
 
   @override
   Widget build(BuildContext context) {
@@ -20,13 +27,15 @@ class WebBridgeApp extends StatelessWidget {
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: HomePage(bridge: bridge),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({required this.bridge, super.key});
+
+  final RustCoreBridge bridge;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -39,50 +48,136 @@ class _HomePageState extends State<HomePage> {
   final tokenController = TextEditingController(text: 'dev-client-token');
   final accounts = <String, AccountRoute>{};
   final activeAccount = <ChatNetwork, String>{};
+  final telegramChallenges = <String, _TelegramChallenge>{};
+  final telegramChallengeInputs = <String, TextEditingController>{};
 
-  ServerGateway? gateway;
-  StreamSubscription<Map<String, dynamic>>? subscription;
-  String status = 'Disconnected';
+  StreamSubscription<CoreFrame>? subscription;
+  String status = 'Rust core ready';
+  bool serverConnected = false;
+
+  @override
+  void initState() {
+    super.initState();
+    subscription = widget.bridge.events.listen(handleFrame);
+    _reloadAccounts();
+  }
 
   Future<void> connect() async {
-    await subscription?.cancel();
-    await gateway?.close();
-
-    final next = ServerGateway(
-      Uri.parse(serverController.text),
-      tokenController.text,
-    );
-    await next.connect();
-    subscription = next.events.listen(handleFrame);
-    gateway = next;
-    next.listAccounts();
-
-    if (mounted) {
-      setState(() => status = 'Server connected');
+    try {
+      await widget.bridge.connect(
+        endpoint: serverController.text.trim(),
+        token: tokenController.text,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        serverConnected = true;
+        status =
+            'Server connected · protocol v${widget.bridge.protocolVersion}';
+      });
+      _reloadAccounts();
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          serverConnected = false;
+          status = 'Connect failed: $error';
+        });
+      }
     }
   }
 
-  void handleFrame(Map<String, dynamic> frame) {
+  void disconnect() {
+    try {
+      widget.bridge.disconnect();
+      setState(() {
+        serverConnected = false;
+        status = 'Server disconnected';
+      });
+    } catch (error) {
+      setState(() => status = 'Disconnect failed: $error');
+    }
+  }
+
+  void handleFrame(CoreFrame frame) {
     switch (frame['type']) {
+      case 'ready':
+        status = 'Server ready · protocol v${frame['protocol']}';
+        serverConnected = true;
       case 'accounts':
-        final snapshots = frame['accounts'] as List<dynamic>;
-        for (final raw in snapshots) {
-          final account = AccountRoute.fromJson(raw as Map<String, dynamic>);
-          accounts[account.key] = account;
-          activeAccount.putIfAbsent(account.network, () => account.key);
-        }
       case 'account_changed':
-        final account = AccountRoute.fromJson(
-          frame['account'] as Map<String, dynamic>,
-        );
-        accounts[account.key] = account;
-        activeAccount.putIfAbsent(account.network, () => account.key);
       case 'account_removed':
-        final raw = frame['account'] as Map<String, dynamic>;
-        final network = ChatNetwork.values.byName(raw['network'] as String);
-        final key = '${network.name}:${raw['id']}';
-        accounts.remove(key);
-        if (activeAccount[network] == key) {
+        _reloadAccounts();
+      case 'auth_challenge':
+        _handleAuthChallenge(frame);
+      case 'message':
+        status = 'New message received';
+      case 'ack':
+        status = 'Request ${frame['request_id']} completed';
+      case 'error':
+        status = '${frame['code']}: ${frame['message']}';
+        if (frame['code'] == 'remote_disconnected') {
+          serverConnected = false;
+        }
+      case 'pong':
+        status = 'Server pong: ${frame['nonce']}';
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _handleAuthChallenge(CoreFrame frame) {
+    final account = frame['account'];
+    final challenge = frame['challenge'];
+    if (account is! Map || challenge is! Map) {
+      return;
+    }
+    if (account['network'] != ChatNetwork.telegram.name) {
+      return;
+    }
+
+    final accountId = account['id'];
+    final type = challenge['type'];
+    if (accountId is! String || type is! String) {
+      return;
+    }
+
+    final key = '${ChatNetwork.telegram.name}:$accountId';
+    final input = telegramChallengeInputs.putIfAbsent(
+      key,
+      TextEditingController.new,
+    );
+    input.clear();
+    telegramChallenges[key] = _TelegramChallenge(
+      accountId: accountId,
+      type: type,
+      hint: challenge['hint'] as String?,
+    );
+  }
+
+  void _reloadAccounts() {
+    try {
+      final snapshots = widget.bridge.listAccounts();
+      final next = <String, AccountRoute>{};
+      for (final raw in snapshots) {
+        final account = AccountRoute.fromJson(raw);
+        next[account.key] = account;
+      }
+
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        accounts
+          ..clear()
+          ..addAll(next);
+
+        for (final network in ChatNetwork.values) {
+          final current = activeAccount[network];
+          if (current != null && accounts.containsKey(current)) {
+            continue;
+          }
           final replacement = accounts.values
               .where((account) => account.network == network)
               .firstOrNull;
@@ -92,57 +187,119 @@ class _HomePageState extends State<HomePage> {
             activeAccount[network] = replacement.key;
           }
         }
-      case 'error':
-        status = '${frame['code']}: ${frame['message']}';
-    }
-    if (mounted) {
-      setState(() {});
+
+        for (final account in accounts.values) {
+          if (account.network == ChatNetwork.telegram &&
+              account.status == AccountStatus.online) {
+            _clearTelegramChallenge(account.key);
+          }
+        }
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => status = 'Account refresh failed: $error');
+      }
     }
   }
 
-  Future<void> addServerAccount() async {
-    if (gateway == null) {
-      setState(() => status = 'Connect the server first');
-      return;
-    }
+  Future<void> showAddAccountDialog() async {
+    final network = await showDialog<ChatNetwork>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Add account'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, ChatNetwork.matrix),
+            child: const ListTile(
+              leading: Icon(Icons.grid_view_outlined),
+              title: Text('Matrix'),
+              subtitle: Text('Login with homeserver credentials'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, ChatNetwork.telegram),
+            child: const ListTile(
+              leading: Icon(Icons.send_outlined),
+              title: Text('Telegram'),
+              subtitle: Text('Login with phone, code and optional 2FA'),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 12, 24, 4),
+            child: Text(
+              'QQ accounts are discovered automatically from NapCatQQ and cannot be added here.',
+            ),
+          ),
+        ],
+      ),
+    );
 
-    var network = ChatNetwork.matrix;
-    final idController = TextEditingController();
-    final nameController = TextEditingController();
+    switch (network) {
+      case ChatNetwork.matrix:
+        await showMatrixLoginDialog();
+      case ChatNetwork.telegram:
+        await showTelegramLoginDialog();
+      case ChatNetwork.qq:
+      case null:
+        return;
+    }
+  }
+
+  Future<void> showMatrixLoginDialog() async {
+    final accountIdController = TextEditingController();
+    final homeserverController = TextEditingController();
+    final usernameController = TextEditingController();
+    final passwordController = TextEditingController();
+    var route = RouteMode.client;
+
     final accepted = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Add server-owned account'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<ChatNetwork>(
-                initialValue: network,
-                items: ChatNetwork.values
-                    .map(
-                      (item) => DropdownMenuItem(
-                        value: item,
-                        child: Text(item.name.toUpperCase()),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) => setDialogState(
-                  () => network = value ?? network,
+          title: const Text('Matrix login'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: accountIdController,
+                  decoration: const InputDecoration(labelText: 'Account ID'),
                 ),
-                decoration: const InputDecoration(labelText: 'Network'),
-              ),
-              TextField(
-                controller: idController,
-                decoration: const InputDecoration(labelText: 'Account ID'),
-              ),
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Display name (optional)',
+                const SizedBox(height: 8),
+                DropdownButtonFormField<RouteMode>(
+                  initialValue: route,
+                  items: _allowedRoutes(ChatNetwork.matrix)
+                      .map(
+                        (item) => DropdownMenuItem(
+                          value: item,
+                          child: Text(item.name),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) =>
+                      setDialogState(() => route = value ?? route),
+                  decoration: const InputDecoration(labelText: 'Route'),
                 ),
-              ),
-            ],
+                const SizedBox(height: 8),
+                TextField(
+                  controller: homeserverController,
+                  decoration: const InputDecoration(labelText: 'Homeserver'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: usernameController,
+                  decoration: const InputDecoration(labelText: 'Username'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: passwordController,
+                  obscureText: true,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  decoration: const InputDecoration(labelText: 'Password'),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -151,29 +308,195 @@ class _HomePageState extends State<HomePage> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Add'),
+              child: const Text('Login'),
             ),
           ],
         ),
       ),
     );
 
-    if (accepted == true && idController.text.trim().isNotEmpty) {
-      gateway!.registerAccount(
-        network: network.name,
-        accountId: idController.text.trim(),
-        displayName: nameController.text.trim().isEmpty
-            ? null
-            : nameController.text.trim(),
-        route: RouteMode.server.name,
-      );
+    if (accepted == true) {
+      final accountId = accountIdController.text.trim();
+      if (accountId.isEmpty ||
+          homeserverController.text.trim().isEmpty ||
+          usernameController.text.trim().isEmpty ||
+          passwordController.text.isEmpty) {
+        setState(() => status = 'Matrix login fields cannot be empty');
+      } else {
+        await _execute(<String, dynamic>{
+          'type': 'matrix_login_password',
+          'account_id': accountId,
+          'route': route.name,
+          'homeserver': homeserverController.text.trim(),
+          'username': usernameController.text.trim(),
+          'password': passwordController.text,
+        });
+      }
     }
+
+    accountIdController.dispose();
+    homeserverController.dispose();
+    usernameController.dispose();
+    passwordController.dispose();
+  }
+
+  Future<void> showTelegramLoginDialog() async {
+    final accountIdController = TextEditingController();
+    final apiIdController = TextEditingController();
+    final apiHashController = TextEditingController();
+    final phoneController = TextEditingController();
+    var route = RouteMode.client;
+
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Telegram login'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: accountIdController,
+                  decoration: const InputDecoration(labelText: 'Account ID'),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<RouteMode>(
+                  initialValue: route,
+                  items: _allowedRoutes(ChatNetwork.telegram)
+                      .map(
+                        (item) => DropdownMenuItem(
+                          value: item,
+                          child: Text(item.name),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) =>
+                      setDialogState(() => route = value ?? route),
+                  decoration: const InputDecoration(labelText: 'Route'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: apiIdController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'API ID'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: apiHashController,
+                  obscureText: true,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  decoration: const InputDecoration(labelText: 'API Hash'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(labelText: 'Phone'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (accepted == true) {
+      final apiId = int.tryParse(apiIdController.text.trim());
+      final accountId = accountIdController.text.trim();
+      if (accountId.isEmpty ||
+          apiId == null ||
+          apiHashController.text.trim().isEmpty ||
+          phoneController.text.trim().isEmpty) {
+        setState(() => status = 'Telegram login fields are invalid');
+      } else {
+        await _execute(<String, dynamic>{
+          'type': 'telegram_begin_login',
+          'account_id': accountId,
+          'route': route.name,
+          'api_id': apiId,
+          'api_hash': apiHashController.text.trim(),
+          'phone': phoneController.text.trim(),
+        });
+      }
+    }
+
+    accountIdController.dispose();
+    apiIdController.dispose();
+    apiHashController.dispose();
+    phoneController.dispose();
+  }
+
+  Future<void> _submitTelegramChallenge(
+    String key,
+    _TelegramChallenge challenge,
+  ) async {
+    final input = telegramChallengeInputs[key]?.text ?? '';
+    if (input.isEmpty) {
+      setState(() => status = 'Telegram challenge input cannot be empty');
+      return;
+    }
+
+    final command = switch (challenge.type) {
+      'telegram_code' => <String, dynamic>{
+        'type': 'telegram_submit_code',
+        'account_id': challenge.accountId,
+        'code': input.trim(),
+      },
+      'telegram_password' => <String, dynamic>{
+        'type': 'telegram_submit_password',
+        'account_id': challenge.accountId,
+        'password': input,
+      },
+      _ => null,
+    };
+
+    if (command == null) {
+      setState(() => status = 'Unsupported auth challenge: ${challenge.type}');
+      return;
+    }
+
+    await _execute(command);
+  }
+
+  Future<void> _execute(Map<String, dynamic> command) async {
+    try {
+      await widget.bridge.execute(command);
+    } catch (error) {
+      if (mounted) {
+        setState(() => status = 'Command failed: $error');
+      }
+    }
+  }
+
+  List<RouteMode> _allowedRoutes(ChatNetwork network) => RouteMode.values
+      .where(
+        (route) => widget.bridge.routeIsAllowed(network.name, route.name),
+      )
+      .toList(growable: false);
+
+  void _clearTelegramChallenge(String key) {
+    telegramChallenges.remove(key);
+    telegramChallengeInputs.remove(key)?.dispose();
   }
 
   @override
   void dispose() {
     subscription?.cancel();
-    gateway?.close();
+    for (final controller in telegramChallengeInputs.values) {
+      controller.dispose();
+    }
     serverController.dispose();
     tokenController.dispose();
     super.dispose();
@@ -186,8 +509,8 @@ class _HomePageState extends State<HomePage> {
         title: const Text('web-bridge v2'),
         actions: [
           IconButton(
-            onPressed: addServerAccount,
-            tooltip: 'Add account',
+            onPressed: showAddAccountDialog,
+            tooltip: 'Add Matrix or Telegram account',
             icon: const Icon(Icons.person_add_alt_1),
           ),
         ],
@@ -210,13 +533,27 @@ class _HomePageState extends State<HomePage> {
           TextField(
             controller: tokenController,
             obscureText: true,
+            enableSuggestions: false,
+            autocorrect: false,
             decoration: const InputDecoration(labelText: 'Client token'),
           ),
           const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: connect,
-            icon: const Icon(Icons.cloud_done_outlined),
-            label: const Text('Connect server'),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: serverConnected ? null : connect,
+                  icon: const Icon(Icons.cloud_done_outlined),
+                  label: const Text('Connect server'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: serverConnected ? disconnect : null,
+                icon: const Icon(Icons.cloud_off_outlined),
+                label: const Text('Disconnect'),
+              ),
+            ],
           ),
           const SizedBox(height: 24),
           for (final network in ChatNetwork.values) _networkSection(network),
@@ -229,6 +566,7 @@ class _HomePageState extends State<HomePage> {
     final items = accounts.values
         .where((account) => account.network == network)
         .toList();
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -236,7 +574,7 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
               child: Row(
                 children: [
                   Expanded(
@@ -247,36 +585,118 @@ class _HomePageState extends State<HomePage> {
                   ),
                   if (network == ChatNetwork.qq)
                     const Tooltip(
-                      message: 'QQ is always routed through the server',
+                      message:
+                          'QQ is discovered from NapCatQQ and always routed through the server',
                       child: Icon(Icons.lock_outline, size: 18),
+                    )
+                  else
+                    IconButton(
+                      onPressed: network == ChatNetwork.matrix
+                          ? showMatrixLoginDialog
+                          : showTelegramLoginDialog,
+                      tooltip: 'Add ${network.name} account',
+                      icon: const Icon(Icons.add),
                     ),
                 ],
               ),
             ),
             if (items.isEmpty)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
-                child: Text('No accounts'),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Text(
+                  network == ChatNetwork.qq
+                      ? 'No NapCatQQ accounts discovered'
+                      : 'No accounts',
+                ),
               )
             else
-              for (final account in items)
-                ListTile(
-                  selected: activeAccount[network] == account.key,
-                  onTap: () => setState(
-                    () => activeAccount[network] = account.key,
-                  ),
-                  leading: Icon(
-                    activeAccount[network] == account.key
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
-                  ),
-                  title: Text(account.label),
-                  subtitle: Text(
-                    '${account.accountId} · ${account.mode.name} · ${account.status.name}',
-                  ),
-                  trailing: _statusIcon(account.status),
-                ),
+              for (final account in items) _accountTile(account),
+            if (network == ChatNetwork.telegram)
+              for (final entry in telegramChallenges.entries)
+                _telegramChallengeCard(entry.key, entry.value),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _accountTile(AccountRoute account) {
+    final selected = activeAccount[account.network] == account.key;
+    final error = account.lastError;
+
+    return ListTile(
+      selected: selected,
+      onTap: () => setState(
+        () => activeAccount[account.network] = account.key,
+      ),
+      leading: Icon(
+        selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+      ),
+      title: Text(account.label),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${account.accountId} · ${account.mode.name} · ${account.status.name}',
+          ),
+          if (error != null && error.isNotEmpty)
+            Text(
+              error,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+        ],
+      ),
+      trailing: _statusIcon(account.status),
+    );
+  }
+
+  Widget _telegramChallengeCard(String key, _TelegramChallenge challenge) {
+    final isPassword = challenge.type == 'telegram_password';
+    final controller = telegramChallengeInputs[key]!;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      child: Card.outlined(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isPassword
+                    ? 'Telegram 2FA · ${challenge.accountId}'
+                    : 'Telegram code · ${challenge.accountId}',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              if (isPassword && challenge.hint?.isNotEmpty == true) ...[
+                const SizedBox(height: 4),
+                Text('Hint: ${challenge.hint}'),
+              ],
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                obscureText: isPassword,
+                enableSuggestions: !isPassword,
+                autocorrect: false,
+                keyboardType: isPassword
+                    ? TextInputType.visiblePassword
+                    : TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: isPassword ? 'Password' : 'Verification code',
+                ),
+                onSubmitted: (_) =>
+                    _submitTelegramChallenge(key, challenge),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton(
+                  onPressed: () => _submitTelegramChallenge(key, challenge),
+                  child: const Text('Submit'),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -292,6 +712,18 @@ class _HomePageState extends State<HomePage> {
       },
     );
   }
+}
+
+class _TelegramChallenge {
+  const _TelegramChallenge({
+    required this.accountId,
+    required this.type,
+    this.hint,
+  });
+
+  final String accountId;
+  final String type;
+  final String? hint;
 }
 
 extension FirstOrNull<T> on Iterable<T> {
