@@ -1,16 +1,16 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export function buildShimPackage(packageJson, loaderPath) {
+export function buildShimPackage(packageJson, loaderEntry) {
   if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
     throw new Error('QQ package.json must contain a JSON object');
   }
   if (typeof packageJson.main !== 'string' || !packageJson.main.trim()) {
     throw new Error('QQ package.json does not contain a usable main entry');
   }
-  if (!isAbsolute(loaderPath)) throw new Error('loaderPath must be absolute');
-  return { ...packageJson, main: loaderPath };
+  if (typeof loaderEntry !== 'string' || !loaderEntry.trim()) throw new Error('loaderEntry is required');
+  return { ...packageJson, main: loaderEntry };
 }
 
 export function buildLoaderSource(originalMain) {
@@ -36,16 +36,18 @@ export function buildLoaderSource(originalMain) {
 }
 
 export async function prepareMainShim({ packagePath, outputDir }) {
-  const raw = await readFile(packagePath, 'utf8');
+  const absolutePackagePath = resolve(packagePath);
+  const raw = await readFile(absolutePackagePath, 'utf8');
   const packageJson = JSON.parse(raw);
   const originalMain = packageJson.main;
   const absoluteOutput = resolve(outputDir);
   await mkdir(absoluteOutput, { recursive: true, mode: 0o700 });
   const loaderPath = join(absoluteOutput, 'qq-main-shim.cjs');
   const packageOutputPath = join(absoluteOutput, 'package.json');
+  const loaderEntry = relative(dirname(absolutePackagePath), loaderPath) || './qq-main-shim.cjs';
   await writeFile(loaderPath, buildLoaderSource(originalMain), { mode: 0o600 });
-  await writeFile(packageOutputPath, `${JSON.stringify(buildShimPackage(packageJson, loaderPath), null, 2)}\n`, { mode: 0o600 });
-  return { packagePath: packageOutputPath, loaderPath, originalMain };
+  await writeFile(packageOutputPath, `${JSON.stringify(buildShimPackage(packageJson, loaderEntry), null, 2)}\n`, { mode: 0o600 });
+  return { packagePath: packageOutputPath, loaderPath, loaderEntry, originalMain };
 }
 
 function parseArgs(argv) {
