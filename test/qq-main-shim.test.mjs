@@ -14,7 +14,7 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
   assert.equal(original.main, './application/app_launcher/index.js');
 });
 
-test('loader bypasses QQ DevTools Runtime with Electron webContents APIs', () => {
+test('loader bypasses QQ DevTools Runtime with hardened Electron webContents APIs', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
   assert.doesNotThrow(() => new Function(source));
   assert.match(source, /webContents\.getAllWebContents\(\)/);
@@ -22,6 +22,11 @@ test('loader bypasses QQ DevTools Runtime with Electron webContents APIs', () =>
   assert.match(source, /target\.executeJavaScript/);
   assert.match(source, /target\.sendInputEvent/);
   assert.match(source, /target\.insertText/);
+  assert.match(source, /target\.focus/);
+  assert.match(source, /owner\.focus/);
+  assert.match(source, /WEB_BRIDGE_SHIM_RENDERER_TIMEOUT_MS/);
+  assert.match(source, /withTimeout/);
+  assert.match(source, /Runtime\.evaluate/);
   assert.match(source, /DOM\.setFileInputFiles/);
   assert.match(source, /Runtime\.bindingCalled/);
   assert.match(source, /WEB_BRIDGE_SHIM_POLL_MS/);
@@ -29,9 +34,7 @@ test('loader bypasses QQ DevTools Runtime with Electron webContents APIs', () =>
   assert.match(source, /send\(\{ id, result: \{ attached: true/);
   assert.match(source, /bindings\.add\(name\);\s*startDirtyPoll\(\);/);
   assert.match(source, /require\(entry\)/);
-  assert.doesNotMatch(source, /\.debugger\.attach\(/);
-  assert.doesNotMatch(source, /\.debugger\.sendCommand\(/);
-  assert.doesNotMatch(source, /Runtime\.addBinding[\s\S]*?await target\.executeJavaScript/);
+  assert.doesNotMatch(source, /\.debugger\./);
   assert.doesNotMatch(source, /appendSwitch\('remote-debugging-port'/);
   assert.doesNotMatch(source, /--no-sandbox/);
 });
