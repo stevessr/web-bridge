@@ -382,3 +382,69 @@ fn text_body(parts: &[MessagePart]) -> Result<String> {
     }
     Ok(body)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{accounts::RuntimeRole, state::CoreConfig};
+    use uuid::Uuid;
+
+    fn telegram(id: &str) -> AccountRef {
+        AccountRef {
+            network: Network::Telegram,
+            id: id.into(),
+        }
+    }
+
+    async fn test_handle() -> Arc<TelegramHandle> {
+        let path = std::env::temp_dir().join(format!("web-bridge-telegram-{}.session", Uuid::new_v4()));
+        let session = Arc::new(SqliteSession::open(&path).await.unwrap());
+        let SenderPool {
+            runner: _,
+            updates,
+            handle,
+        } = SenderPool::new(session, 1);
+        let client = Client::new(handle);
+        let pool_task = tokio::spawn(std::future::pending::<()>());
+        Arc::new(TelegramHandle {
+            client,
+            login: Mutex::new(LoginStage::None),
+            updates: Mutex::new(Some(updates)),
+            update_task: Mutex::new(None),
+            pool_task: pool_task.abort_handle(),
+            peers: Arc::new(DashMap::new()),
+        })
+    }
+
+    #[tokio::test]
+    async fn disconnecting_one_telegram_account_keeps_the_other_online() {
+        let state = CoreState::new(RuntimeRole::Client, CoreConfig::default());
+        let account_a = telegram("telegram-a");
+        let account_b = telegram("telegram-b");
+        for account in [&account_a, &account_b] {
+            state
+                .accounts
+                .upsert(account.clone(), None, RouteMode::Client)
+                .unwrap();
+            state
+                .accounts
+                .set_status(account, AccountStatus::Online, None)
+                .unwrap();
+        }
+        state.telegram.insert(account_a.clone(), test_handle().await);
+        state.telegram.insert(account_b.clone(), test_handle().await);
+
+        disconnect(&state, &account_a).await;
+
+        assert!(!state.telegram.contains_key(&account_a));
+        assert!(state.telegram.contains_key(&account_b));
+        assert_eq!(
+            state.accounts.get(&account_a).unwrap().status,
+            AccountStatus::Offline
+        );
+        assert_eq!(
+            state.accounts.get(&account_b).unwrap().status,
+            AccountStatus::Online
+        );
+    }
+}
