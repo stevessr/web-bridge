@@ -27,7 +27,7 @@ function shimRequest(host, port, payload, timeoutMs = 3000) {
     socket.setEncoding('utf8');
     let buffer = '';
     let settled = false;
-    const timer = setTimeout(() => finish(reject, new Error(`shim debugger request timed out at ${host}:${port}`)), timeoutMs);
+    const timer = setTimeout(() => finish(reject, new Error(`shim bridge request timed out at ${host}:${port}`)), timeoutMs);
 
     const finish = (fn, value) => {
       if (settled) return;
@@ -42,7 +42,7 @@ function shimRequest(host, port, payload, timeoutMs = 3000) {
     });
     socket.on('data', (chunk) => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer) > MAX_SHIM_BUFFER_BYTES) return finish(reject, new Error('shim debugger response is too large'));
+      if (Buffer.byteLength(buffer) > MAX_SHIM_BUFFER_BYTES) return finish(reject, new Error('shim bridge response is too large'));
       let newline;
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline);
@@ -51,13 +51,13 @@ function shimRequest(host, port, payload, timeoutMs = 3000) {
         let message;
         try { message = JSON.parse(line); } catch { continue; }
         if (message.id !== payload.id) continue;
-        if (message.error) return finish(reject, new Error(`${message.error.code ?? -32000}: ${message.error.message || 'shim debugger error'}`));
+        if (message.error) return finish(reject, new Error(`${message.error.code ?? -32000}: ${message.error.message || 'shim bridge error'}`));
         return finish(resolve, message.result ?? {});
       }
     });
     socket.on('error', (error) => finish(reject, error));
     socket.on('close', () => {
-      if (!settled) finish(reject, new Error(`shim debugger connection closed at ${host}:${port}`));
+      if (!settled) finish(reject, new Error(`shim bridge connection closed at ${host}:${port}`));
     });
   });
 }
@@ -67,9 +67,9 @@ export async function listShimTargets(host = '127.0.0.1', port = 9222, timeoutMs
   try {
     result = await shimRequest(host, port, { id: 1, op: 'list' }, timeoutMs);
   } catch (error) {
-    throw new Error(`Electron debugger shim discovery failed at ${host}:${port}: ${error.message}`, { cause: error });
+    throw new Error(`Electron shim discovery failed at ${host}:${port}: ${error.message}`, { cause: error });
   }
-  if (!Array.isArray(result)) throw new Error(`Electron debugger shim discovery returned an invalid target list at ${host}:${port}`);
+  if (!Array.isArray(result)) throw new Error(`Electron shim discovery returned an invalid target list at ${host}:${port}`);
   const authority = shimAuthority(host, port);
   return result.map((candidate) => ({
     ...candidate,
@@ -202,7 +202,7 @@ export class ShimCdpConnection extends ListenerSet {
   constructor(url, { callTimeoutMs = 15_000 } = {}) {
     super();
     const parsed = new URL(url);
-    if (parsed.protocol !== 'shim:') throw new Error(`unsupported shim debugger URL: ${url}`);
+    if (parsed.protocol !== 'shim:') throw new Error(`unsupported shim bridge URL: ${url}`);
     this.url = url;
     this.host = parsed.hostname;
     this.port = Number(parsed.port);
@@ -222,62 +222,44 @@ export class ShimCdpConnection extends ListenerSet {
     socket.setNoDelay(true);
     socket.setEncoding('utf8');
     this.socket = socket;
-    try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          socket.destroy();
-          reject(new Error('Electron debugger shim connect timeout'));
-        }, 10_000);
-        const cleanup = () => { clearTimeout(timer); socket.off('connect', onConnect); socket.off('error', onError); };
-        const onConnect = () => { cleanup(); resolve(); };
-        const onError = (error) => { cleanup(); reject(error); };
-        socket.once('connect', onConnect);
-        socket.once('error', onError);
-      });
-      socket.on('data', (chunk) => this.#onData(chunk));
-      socket.on('error', (error) => this.emit('error', { error }));
-      socket.on('close', () => this.#onClose());
-      await this.#request({ op: 'attach', targetId: this.targetId }, 10_000);
-    } catch (error) {
-      try { socket.destroy(); } catch {}
-      if (this.socket === socket) this.socket = null;
-      throw error;
-    }
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Electron shim connect timeout')), 10_000);
+      const cleanup = () => { clearTimeout(timer); socket.off('connect', onConnect); socket.off('error', onError); };
+      const onConnect = () => { cleanup(); resolve(); };
+      const onError = (error) => { cleanup(); reject(error); };
+      socket.once('connect', onConnect);
+      socket.once('error', onError);
+    });
+    socket.on('data', (chunk) => this.#onData(chunk));
+    socket.on('error', (error) => this.emit('error', { error }));
+    socket.on('close', () => this.#onClose());
+    await this.#request({ op: 'attach', targetId: this.targetId }, 10_000);
   }
 
-  async call(method, params = {}, timeoutMs = this.callTimeoutMs) {
-    try {
-      return await this.#request({ method, params }, timeoutMs);
-    } catch (error) {
-      if (method === 'Runtime.enable' || method === 'Page.enable') this.close();
-      throw error;
-    }
+  call(method, params = {}, timeoutMs = this.callTimeoutMs) {
+    return this.#request({ method, params }, timeoutMs);
   }
 
   close() {
     this.closed = true;
-    const socket = this.socket;
-    this.socket = null;
-    try { socket?.end(); } catch {}
-    try { socket?.destroy(); } catch {}
+    try { this.socket?.end(); } catch {}
+    try { this.socket?.destroy(); } catch {}
   }
 
   #request(payload, timeoutMs) {
-    if (!this.socket || this.socket.destroyed) return Promise.reject(new Error('Electron debugger shim is not connected'));
-    const socket = this.socket;
+    if (!this.socket || this.socket.destroyed) return Promise.reject(new Error('Electron shim is not connected'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        const error = new Error(`Electron debugger shim call timed out: ${payload.method || payload.op}`);
-        try { socket.destroy(error); } catch {}
-        reject(error);
+        try { this.socket?.destroy(); } catch {}
+        reject(new Error(`Electron shim call timed out: ${payload.method || payload.op}`));
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); }
       });
-      socket.write(`${JSON.stringify({ id, ...payload, token: shimToken() })}\n`, (error) => {
+      this.socket.write(`${JSON.stringify({ id, ...payload, token: shimToken() })}\n`, (error) => {
         if (!error) return;
         const waiter = this.pending.get(id);
         this.pending.delete(id);
@@ -287,7 +269,7 @@ export class ShimCdpConnection extends ListenerSet {
   }
 
   #onClose() {
-    const error = new Error('Electron debugger shim connection closed');
+    const error = new Error('Electron shim connection closed');
     for (const waiter of this.pending.values()) waiter.reject(error);
     this.pending.clear();
     this.socket = null;
@@ -297,7 +279,7 @@ export class ShimCdpConnection extends ListenerSet {
   #onData(chunk) {
     this.buffer += chunk;
     if (Buffer.byteLength(this.buffer) > MAX_SHIM_BUFFER_BYTES) {
-      this.emit('error', { error: new Error('Electron debugger shim message buffer exceeded limit') });
+      this.emit('error', { error: new Error('Electron shim message buffer exceeded limit') });
       this.socket?.destroy();
       return;
     }
@@ -312,7 +294,7 @@ export class ShimCdpConnection extends ListenerSet {
         const waiter = this.pending.get(message.id);
         if (!waiter) continue;
         this.pending.delete(message.id);
-        if (message.error) waiter.reject(new Error(`${message.error.code ?? -32000}: ${message.error.message || 'shim debugger error'}`));
+        if (message.error) waiter.reject(new Error(`${message.error.code ?? -32000}: ${message.error.message || 'shim bridge error'}`));
         else waiter.resolve(message.result ?? {});
         continue;
       }
