@@ -18,6 +18,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 futures-util = "0.3"
+glass_pumpkin = "=2.0.0-rc0"
 grammers-client = "0.10.0"
 grammers-mtsender = "0.10.0"
 grammers-session = { version = "0.10.0", default-features = false, features = ["serde"] }
