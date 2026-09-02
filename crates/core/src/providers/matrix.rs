@@ -5,7 +5,10 @@ use chrono::Utc;
 use matrix_sdk::{
     Client, Room,
     config::SyncSettings,
-    ruma::{RoomId, events::room::message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent}},
+    ruma::{
+        RoomId,
+        events::room::message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+    },
 };
 use tokio::task::AbortHandle;
 use web_bridge_protocol::{
@@ -150,31 +153,29 @@ pub fn disconnect(state: &CoreState, account: &AccountRef) {
 }
 
 fn install_message_handler(client: &Client, account: AccountRef, state: Arc<CoreState>) {
-    client.add_event_handler(
-        move |event: OriginalSyncRoomMessageEvent, room: Room| {
-            let account = account.clone();
-            let state = state.clone();
-            async move {
-                let raw = serde_json::to_value(&event).ok();
-                let message = UnifiedMessage {
-                    id: event.event_id.to_string(),
-                    account,
-                    conversation: ConversationRef {
-                        kind: ConversationKind::Room,
-                        id: room.room_id().to_string(),
-                    },
-                    sender_id: event.sender.to_string(),
-                    sender_name: None,
-                    timestamp: Utc::now(),
-                    parts: vec![MessagePart::Text {
-                        text: event.content.body().to_owned(),
-                    }],
-                    raw,
-                };
-                let _ = state.events.send(ServerFrame::Message { message });
-            }
-        },
-    );
+    client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
+        let account = account.clone();
+        let state = state.clone();
+        async move {
+            let raw = serde_json::to_value(&event).ok();
+            let message = UnifiedMessage {
+                id: event.event_id.to_string(),
+                account,
+                conversation: ConversationRef {
+                    kind: ConversationKind::Room,
+                    id: room.room_id().to_string(),
+                },
+                sender_id: event.sender.to_string(),
+                sender_name: None,
+                timestamp: Utc::now(),
+                parts: vec![MessagePart::Text {
+                    text: event.content.body().to_owned(),
+                }],
+                raw,
+            };
+            let _ = state.events.send(ServerFrame::Message { message });
+        }
+    });
 }
 
 fn text_body(parts: &[MessagePart]) -> Result<String> {
