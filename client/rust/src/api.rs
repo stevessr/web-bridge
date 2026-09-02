@@ -123,9 +123,12 @@ fn command_route(command: &Command) -> Result<Option<RouteMode>, String> {
             network: Network::Telegram,
             id: account_id.clone(),
         })?,
-        Command::RemoveAccount { account } | Command::DisconnectAccount { account } => {
-            account_route(account)?
-        }
+        Command::RemoveAccount { account }
+        | Command::DisconnectAccount { account }
+        | Command::ListConversations { account, .. }
+        | Command::ListMessages { account, .. }
+        | Command::GetCursor { account, .. }
+        | Command::SetCursor { account, .. } => account_route(account)?,
     };
     Ok(Some(route))
 }
