@@ -136,7 +136,7 @@ fn mirror_account(state: &CoreState, snapshot: &web_bridge_protocol::AccountSnap
     ) else {
         return;
     };
-    state.accounts.set_status(
+    let _ = state.accounts.set_status(
         &snapshot.account,
         snapshot.status,
         snapshot.last_error.clone(),
