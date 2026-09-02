@@ -9,7 +9,7 @@ use grammers_client::{
     update::Update,
 };
 use grammers_mtsender::SenderPool;
-use grammers_session::{storages::SqliteSession, types::PeerRef, updates::UpdatesLike};
+use grammers_session::{types::PeerRef, updates::UpdatesLike};
 use serde_json::json;
 use tokio::{
     sync::{Mutex, mpsc::UnboundedReceiver},
@@ -21,7 +21,7 @@ use web_bridge_protocol::{
     MessagePart, Network, RouteMode, ServerFrame, UnifiedMessage,
 };
 
-use crate::state::CoreState;
+use crate::{state::CoreState, telegram_session::RusqliteSession};
 
 pub struct TelegramHandle {
     pub client: Client,
@@ -301,8 +301,7 @@ async fn build_handle(
         .await
         .context("create Telegram account directory")?;
     let session = Arc::new(
-        SqliteSession::open(account_dir.join("telegram.session"))
-            .await
+        RusqliteSession::open(&account_dir.join("telegram.session"))
             .context("open Telegram session")?,
     );
     let SenderPool {
@@ -498,7 +497,7 @@ mod tests {
     async fn test_handle() -> Arc<TelegramHandle> {
         let path =
             std::env::temp_dir().join(format!("web-bridge-telegram-{}.session", Uuid::new_v4()));
-        let session = Arc::new(SqliteSession::open(&path).await.unwrap());
+        let session = Arc::new(RusqliteSession::open(&path).unwrap());
         let SenderPool {
             runner: _,
             updates,
