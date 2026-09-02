@@ -9,6 +9,17 @@ test('normalizes pointer input', () => {
   });
 });
 
+test('preserves validated screen scope and accepts screen switching', () => {
+  assert.deepEqual(parseClientMessage(JSON.stringify({ type: 'selectScreen', screenId: 'window:2' })), {
+    type: 'selectScreen', screenId: 'window:2'
+  });
+  assert.deepEqual(parseClientMessage(JSON.stringify({ type: 'text', screenId: '2', nodeId: 7, text: '喵' })), {
+    type: 'text', screenId: '2', nodeId: 7, text: '喵'
+  });
+  assert.equal(parseClientMessage(JSON.stringify({ type: 'selectScreen', screenId: '../bad' })), null);
+  assert.equal(parseClientMessage(JSON.stringify({ type: 'click', screenId: '../bad', nodeId: 1 })), null);
+});
+
 test('rejects invalid and oversized text', () => {
   assert.equal(parseClientMessage('{'), null);
   assert.equal(parseClientMessage(JSON.stringify({ type: 'text', nodeId: 1, text: 'abcd' }), { maxTextBytes: 3 }), null);

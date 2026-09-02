@@ -26,6 +26,7 @@ jobs:
           node --check src/protocol.mjs
           node --check src/injected.mjs
           node --check src/host.mjs
+          node --check src/host-multi.mjs
           node --check src/qq-detect.mjs
           node --check src/qq-main-shim.mjs
           node --check src/electron-cdp-bootstrap.mjs

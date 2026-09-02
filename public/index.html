@@ -7,6 +7,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>QQ NT Web Bridge</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/screens.css">
 </head>
 <body data-connected="false" data-status="connecting" data-control="none">
   <header id="statusbar">
@@ -24,12 +25,14 @@
       <span id="meta"></span>
     </div>
 
+    <nav id="screen-tabs" class="screen-tabs" aria-label="QQ 窗口" hidden></nav>
+
     <nav id="actions" aria-label="远程控制工具栏">
-      <button id="take-control" class="toolbar-button primary" type="button" title="请求控制权">
+      <button id="take-control" class="toolbar-button primary" type="button" title="请求当前窗口控制权">
         <span class="button-icon" aria-hidden="true">●</span>
         <span class="button-label">接管控制</span>
       </button>
-      <button id="resync" class="toolbar-button" type="button" title="重新获取完整界面">
+      <button id="resync" class="toolbar-button" type="button" title="重新获取当前窗口完整界面">
         <span class="button-icon" aria-hidden="true">↻</span>
         <span class="button-label">重新同步</span>
       </button>
@@ -59,7 +62,7 @@
           <span><i aria-hidden="true"></i><b>宿主</b><em id="host-state">等待中</em></span>
         </div>
         <button id="retry" type="button">立即重试</button>
-        <p class="connection-hint">请保持 QQ NT 与 <code>pnpm dev:qq</code> 运行。此页面只镜像经过清理的 DOM，不加载 QQ 的脚本。</p>
+        <p class="connection-hint">请保持 QQ NT 与 <code>pnpm dev:qq</code> 运行。多个 QQ 窗口会作为独立 Screen 出现在顶部，可分别同步与控制。</p>
       </div>
     </section>
 

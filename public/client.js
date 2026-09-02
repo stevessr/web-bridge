@@ -3,6 +3,7 @@ const metaEl = document.querySelector('#meta');
 const viewport = document.querySelector('#viewport');
 const stage = document.querySelector('#stage');
 const scaler = document.querySelector('#scaler');
+const screenTabs = document.querySelector('#screen-tabs');
 const takeControlButton = document.querySelector('#take-control');
 const resyncButton = document.querySelector('#resync');
 const zoomOutButton = document.querySelector('#zoom-out');
@@ -25,6 +26,8 @@ document.head.append(fontStyle);
 let snapshot = null;
 let revision = 0;
 let activeNodeId = null;
+let activeScreenId = null;
+let screens = [];
 let socket = null;
 let reconnectTimer = null;
 let reconnectDelay = 500;
@@ -38,16 +41,21 @@ let fitMode = true;
 let manualScale = 1;
 let currentScale = 1;
 
+const SCREEN_SCOPED_TYPES = new Set([
+  'resync', 'takeControl', 'releaseControl', 'fileCommit', 'focus', 'select',
+  'pointer', 'click', 'wheel', 'key', 'text'
+]);
+
 if (browserEndpoint) browserEndpoint.textContent = location.host || '本机';
 
 function updateConnectionCopy(kind) {
   const copies = {
     connecting: ['正在连接桥接服务', '正在建立本地 WebSocket 连接。', '连接中'],
     disconnected: ['桥接服务已断开', '连接已中断，Web Bridge 会自动重试。', '已断开'],
-    waiting: ['等待宿主 QQ NT', '桥接服务已经就绪，正在等待 QQ NT 的可调试渲染进程。', '等待 QQ'],
-    syncing: ['正在同步 QQ NT', '已发现 QQ NT，正在获取完整界面与初始状态。', '同步中'],
+    waiting: ['等待宿主 QQ NT', '桥接服务已经就绪，正在等待可用的 QQ Screen。', '等待 QQ'],
+    syncing: ['正在同步 QQ Screen', '已选择 QQ 窗口，正在获取完整界面与初始状态。', '同步中'],
     error: ['连接出现问题', 'Web Bridge 暂时无法完成同步，可立即重试。', '异常'],
-    ready: ['QQ NT 已连接', '远程界面已经准备就绪。', hasControl ? '可控制' : '只读']
+    ready: ['QQ Screen 已连接', '当前 QQ 窗口已经准备就绪。', hasControl ? '可控制' : '只读']
   };
   const [title, detail, host] = copies[kind] || copies.connecting;
   if (connectionTitle) connectionTitle.textContent = title;
@@ -61,7 +69,7 @@ function updateControls() {
     takeControlButton.disabled = !socketOpen || !attached || hasControl;
     const label = takeControlButton.querySelector('.button-label');
     if (label) label.textContent = hasControl ? '已接管' : '接管控制';
-    takeControlButton.title = hasControl ? '当前客户端拥有控制权' : '请求控制权';
+    takeControlButton.title = hasControl ? '当前客户端拥有这个 Screen 的控制权' : '请求当前 Screen 控制权';
   }
   if (resyncButton) resyncButton.disabled = !socketOpen || !attached;
   const canScale = Boolean(snapshot?.viewport);
@@ -78,6 +86,83 @@ function setStatus(text, ok, kind = ok ? 'ready' : 'error') {
   updateControls();
 }
 
+function screenLabel(screen, index = 0) {
+  const label = String(screen?.label || screen?.title || '').trim();
+  if (label) return label.length > 64 ? `${label.slice(0, 61)}…` : label;
+  return `Screen ${index + 1}`;
+}
+
+function renderScreenTabs(nextScreens, selectedId) {
+  screens = Array.isArray(nextScreens) ? nextScreens : [];
+  if (!screenTabs) return;
+  screenTabs.hidden = screens.length <= 1;
+  const fragment = document.createDocumentFragment();
+  screens.forEach((screen, index) => {
+    const id = String(screen.id || '');
+    if (!id) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'screen-tab';
+    button.dataset.screenId = id;
+    button.dataset.ready = String(Boolean(screen.ready));
+    button.dataset.visible = String(Boolean(screen.visible));
+    button.dataset.focused = String(Boolean(screen.focused));
+    button.classList.toggle('active', id === selectedId);
+    button.setAttribute('aria-pressed', String(id === selectedId));
+    button.title = `${screenLabel(screen, index)} · Alt+${index + 1}`;
+
+    const dot = document.createElement('span');
+    dot.className = 'screen-tab-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'screen-tab-label';
+    label.textContent = screenLabel(screen, index);
+    button.append(dot, label);
+    button.addEventListener('click', () => requestScreen(id));
+    fragment.append(button);
+  });
+  screenTabs.replaceChildren(fragment);
+  const active = screenTabs.querySelector('.screen-tab.active');
+  active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+}
+
+function unregisterTree(node) {
+  if (!node) return;
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const id = Number(node.dataset?.wbId);
+    if (Number.isFinite(id)) nodes.delete(id);
+    if (node.shadowRoot) for (const child of [...node.shadowRoot.childNodes]) unregisterTree(child);
+  }
+  for (const child of [...node.childNodes]) unregisterTree(child);
+}
+
+function clearStage() {
+  for (const child of [...stage.childNodes]) unregisterTree(child);
+  nodes.clear();
+  stage.replaceChildren();
+  fontStyle.textContent = '';
+  snapshot = null;
+  revision = 0;
+  activeNodeId = null;
+  stage.style.width = '';
+  stage.style.height = '';
+  scaler.style.width = '';
+  scaler.style.height = '';
+}
+
+function requestScreen(screenId) {
+  const id = String(screenId || '');
+  if (!id || id === activeScreenId) return;
+  activeScreenId = id;
+  try { sessionStorage.setItem('web-bridge-screen', id); } catch {}
+  clearStage();
+  attached = false;
+  hasControl = false;
+  renderScreenTabs(screens, id);
+  setStatus('正在切换 QQ Screen…', false, 'syncing');
+  send({ type: 'selectScreen', screenId: id });
+}
+
 function connect() {
   clearTimeout(reconnectTimer);
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
@@ -90,8 +175,10 @@ function connect() {
   socket.addEventListener('open', () => {
     socketOpen = true;
     reconnectDelay = 500;
-    setStatus('桥接服务已连接 · 正在发现 QQ NT', false, 'waiting');
-    send({ type: 'resync' });
+    setStatus('桥接服务已连接 · 正在发现 QQ Screen', false, 'waiting');
+    const remembered = (() => { try { return sessionStorage.getItem('web-bridge-screen'); } catch { return null; } })();
+    if (remembered) send({ type: 'selectScreen', screenId: remembered });
+    else send({ type: 'resync' });
   });
   socket.addEventListener('message', onMessage);
   socket.addEventListener('close', () => {
@@ -111,17 +198,27 @@ function onMessage(event) {
   try { message = JSON.parse(event.data); } catch { return; }
   if (message.type === 'status') {
     if (instanceId && message.instanceId && instanceId !== message.instanceId) {
-      revision = 0;
-      snapshot = null;
-      send({ type: 'resync' });
+      clearStage();
+      activeScreenId = null;
     }
     instanceId = message.instanceId || instanceId;
+    const nextScreenId = message.activeScreenId ? String(message.activeScreenId) : null;
+    if (nextScreenId && activeScreenId !== nextScreenId) {
+      activeScreenId = nextScreenId;
+      clearStage();
+      try { sessionStorage.setItem('web-bridge-screen', nextScreenId); } catch {}
+    }
+    renderScreenTabs(message.screens, activeScreenId);
     attached = Boolean(message.attached);
     hasControl = message.control === 'granted';
     if (attached) {
       const ready = Boolean(snapshot?.root);
-      setStatus(hasControl ? 'QQ NT 已连接 · 可控制' : 'QQ NT 已连接 · 只读', ready, ready ? 'ready' : 'syncing');
+      const count = Number(message.screenCount || message.screens?.length || 1);
+      setStatus(hasControl ? `QQ Screen 已连接 · 可控制 · ${count} 屏` : `QQ Screen 已连接 · 只读 · ${count} 屏`, ready, ready ? 'ready' : 'syncing');
       metaEl.textContent = `${message.target?.title || 'QQ NT'} · r${message.revision ?? revision}`;
+    } else if (screens.length) {
+      setStatus('正在连接所选 QQ Screen…', false, 'syncing');
+      metaEl.textContent = '';
     } else {
       setStatus('等待宿主 QQ NT…', false, 'waiting');
       metaEl.textContent = '';
@@ -129,12 +226,15 @@ function onMessage(event) {
     return;
   }
   if (message.type === 'snapshot') {
+    if (message.screenId && activeScreenId && String(message.screenId) !== activeScreenId) return;
+    if (message.screenId) activeScreenId = String(message.screenId);
     renderSnapshot(message.snapshot);
     return;
   }
   if (message.type === 'patch') {
+    if (message.screenId && activeScreenId && String(message.screenId) !== activeScreenId) return;
     if (message.baseRevision !== revision) {
-      setStatus('版本发生变化 · 正在重新同步', false, 'syncing');
+      setStatus('Screen 版本发生变化 · 正在重新同步', false, 'syncing');
       send({ type: 'resync' });
       return;
     }
@@ -142,30 +242,30 @@ function onMessage(event) {
     return;
   }
   if (message.type === 'resyncRequired') {
-    setStatus('宿主要求重新同步…', false, 'syncing');
+    if (message.screenId && activeScreenId && String(message.screenId) !== activeScreenId) return;
+    setStatus('宿主要求重新同步当前 Screen…', false, 'syncing');
     send({ type: 'resync' });
+    return;
+  }
+  if (message.type === 'screenUnavailable') {
+    setStatus('所选 QQ Screen 已关闭 · 正在切换', false, 'syncing');
     return;
   }
   if (message.type === 'controlDenied') {
     hasControl = false;
-    setStatus('QQ NT 已连接 · 当前由另一客户端控制', true, 'ready');
+    setStatus('当前 Screen 正由另一客户端控制', true, 'ready');
     return;
   }
   if (message.type === 'rateLimited') setStatus('输入过快 · 已临时限流', true, 'ready');
 }
 
 function send(message) {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
-}
-
-function unregisterTree(node) {
-  if (!node) return;
-  if (node.nodeType === Node.ELEMENT_NODE) {
-    const id = Number(node.dataset?.wbId);
-    if (Number.isFinite(id)) nodes.delete(id);
-    if (node.shadowRoot) for (const child of [...node.shadowRoot.childNodes]) unregisterTree(child);
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  let payload = message;
+  if (activeScreenId && SCREEN_SCOPED_TYPES.has(message?.type) && !message.screenId) {
+    payload = { ...message, screenId: activeScreenId };
   }
-  for (const child of [...node.childNodes]) unregisterTree(child);
+  socket.send(JSON.stringify(payload));
 }
 
 function clearAttributes(element) {
@@ -283,7 +383,7 @@ function renderSnapshot(next) {
   applyMeta(next);
   if (previousActive) focusMirror(previousActive);
   attached = true;
-  setStatus(hasControl ? 'QQ NT 已连接 · 可控制' : 'QQ NT 已连接 · 只读', true, 'ready');
+  setStatus(hasControl ? 'QQ Screen 已连接 · 可控制' : 'QQ Screen 已连接 · 只读', true, 'ready');
 }
 
 function applyMeta(meta) {
@@ -463,12 +563,13 @@ stage.addEventListener('change', async (event) => {
   if (event.target instanceof HTMLInputElement && event.target.type === 'file') {
     const id = Number(event.target.dataset.wbId);
     const files = [...(event.target.files || [])];
-    if (!Number.isFinite(id) || !files.length) return;
+    const uploadScreenId = activeScreenId;
+    if (!Number.isFinite(id) || !files.length || !uploadScreenId) return;
     try {
-      setStatus(`正在上传 ${files.length} 个文件到宿主…`, true, 'ready');
+      setStatus(`正在上传 ${files.length} 个文件到当前 Screen…`, true, 'ready');
       const uploadTokens = [];
       for (const file of files) {
-        const response = await fetch(`/upload?nodeId=${encodeURIComponent(id)}&name=${encodeURIComponent(file.name)}`, {
+        const response = await fetch(`/upload?screenId=${encodeURIComponent(uploadScreenId)}&nodeId=${encodeURIComponent(id)}&name=${encodeURIComponent(file.name)}`, {
           method: 'POST', body: file, headers: { 'content-type': file.type || 'application/octet-stream' }, credentials: 'same-origin'
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -476,9 +577,9 @@ stage.addEventListener('change', async (event) => {
         if (!result.uploadToken) throw new Error('missing upload token');
         uploadTokens.push(result.uploadToken);
       }
-      send({ type: 'fileCommit', nodeId: id, uploadTokens });
+      send({ type: 'fileCommit', screenId: uploadScreenId, nodeId: id, uploadTokens });
       event.target.value = '';
-      setStatus('文件已交给 QQ NT 处理', true, 'ready');
+      setStatus('文件已交给当前 QQ Screen 处理', true, 'ready');
     } catch (error) {
       setStatus(`文件上传失败：${error.message}`, true, 'ready');
     }
@@ -487,6 +588,12 @@ stage.addEventListener('change', async (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.altKey && !event.ctrlKey && !event.metaKey) {
+    if (/^[1-9]$/.test(event.key)) {
+      const screen = screens[Number(event.key) - 1];
+      if (screen?.id) {
+        event.preventDefault(); requestScreen(screen.id); return;
+      }
+    }
     if (event.key === '0') {
       event.preventDefault(); fitMode = true; fitStage(); return;
     }
@@ -535,7 +642,7 @@ document.addEventListener('paste', (event) => {
 
 takeControlButton?.addEventListener('click', () => send({ type: 'takeControl' }));
 resyncButton?.addEventListener('click', () => {
-  setStatus('正在重新同步 QQ NT…', false, 'syncing');
+  setStatus('正在重新同步当前 QQ Screen…', false, 'syncing');
   send({ type: 'resync' });
 });
 zoomOutButton?.addEventListener('click', () => setManualScale(currentScale / 1.15));
@@ -543,7 +650,7 @@ zoomInButton?.addEventListener('click', () => setManualScale(currentScale * 1.15
 fitViewButton?.addEventListener('click', () => { fitMode = true; fitStage(); });
 retryButton?.addEventListener('click', () => {
   if (socket?.readyState === WebSocket.OPEN) {
-    setStatus('正在重新发现并同步 QQ NT…', false, attached ? 'syncing' : 'waiting');
+    setStatus('正在重新发现并同步 QQ Screen…', false, attached ? 'syncing' : 'waiting');
     send({ type: 'resync' });
   } else {
     try { socket?.close(); } catch {}
