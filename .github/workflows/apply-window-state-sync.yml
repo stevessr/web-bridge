@@ -1,0 +1,34 @@
+name: apply-window-state-sync
+on:
+  push:
+    branches: [feat/window-state-sync]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply implementation
+        run: node scripts/.apply-window-state-sync.mjs
+      - name: Validate
+        run: |
+          npm install --no-package-lock
+          npm test
+          node --check src/protocol.mjs
+          node --check src/host-multi.mjs
+          node --check public/input-fastpath.js
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/apply-window-state-sync.yml scripts/.apply-window-state-sync.mjs
+          git add src/protocol.mjs src/host-multi.mjs public/index.html public/screens.css public/input-fastpath.js test/window-state-sync.test.mjs
+          git commit -m 'feat: synchronize remote QQ window state'
+          git push
