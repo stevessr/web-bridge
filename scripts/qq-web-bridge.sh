@@ -4,9 +4,13 @@ set -euo pipefail
 CDP_HOST="${WEB_BRIDGE_CDP_HOST:-127.0.0.1}"
 WEB_HOST="${WEB_BRIDGE_HOST:-127.0.0.1}"
 WEB_PORT="${WEB_BRIDGE_PORT:-8080}"
-# Production QQ builds can disable Electron's Node CLI inspector fuse. Keep the
-# inspector bootstrap available for compatible builds, but never make it the
-# default path.
+# QQ 3.2.33-52892 disables the Node CLI inspector and also ignores the renderer
+# remote-debugging switch when it is supplied only on the packaged executable
+# command line. On Linux, prefer a temporary package.json overlay that runs a
+# tiny main-process shim before QQ's real entry and uses app.commandLine.
+MAIN_SHIM_MODE="${WEB_BRIDGE_QQ_MAIN_SHIM:-auto}"
+# Kept only as an explicit diagnostic path for Electron builds whose
+# nodeCliInspect fuse is enabled.
 CDP_BOOTSTRAP="${WEB_BRIDGE_QQ_CDP_BOOTSTRAP:-0}"
 
 case "$CDP_HOST" in
@@ -83,12 +87,14 @@ export WEB_BRIDGE_HOST="$WEB_HOST"
 export WEB_BRIDGE_PORT="$WEB_PORT"
 
 cleanup() {
+  if [[ -n "${DIAG_PID:-}" ]] && kill -0 "$DIAG_PID" >/dev/null 2>&1; then kill "$DIAG_PID" >/dev/null 2>&1 || true; fi
   if [[ -n "${BRIDGE_PID:-}" ]] && kill -0 "$BRIDGE_PID" >/dev/null 2>&1; then kill "$BRIDGE_PID" >/dev/null 2>&1 || true; fi
   if [[ -n "${QQ_PID:-}" ]] && kill -0 "$QQ_PID" >/dev/null 2>&1; then kill "$QQ_PID" >/dev/null 2>&1 || true; fi
+  if [[ -n "${SHIM_DIR:-}" ]]; then rm -rf "$SHIM_DIR" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT INT TERM
 
-launch_qq() {
+launch_qq_direct() {
   "$QQ_BIN" \
     "--remote-debugging-address=$CDP_HOST" \
     "--remote-debugging-port=$CDP_PORT" \
@@ -96,29 +102,118 @@ launch_qq() {
   QQ_PID=$!
 }
 
+USE_MAIN_SHIM=0
+SHIM_DIR=""
+QQ_APP_PACKAGE="$(dirname "$QQ_BIN")/resources/app/package.json"
+
+main_shim_forced() {
+  case "$MAIN_SHIM_MODE" in
+    1|true|yes|on|force) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+main_shim_disabled() {
+  case "$MAIN_SHIM_MODE" in
+    0|false|no|off|disable|disabled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_main_shim() {
+  if main_shim_disabled; then
+    echo "[web-bridge] QQ main-entry CDP shim disabled by WEB_BRIDGE_QQ_MAIN_SHIM=$MAIN_SHIM_MODE"
+    return 1
+  fi
+  if [[ ! -f "$QQ_APP_PACKAGE" ]]; then
+    if main_shim_forced; then
+      echo "[web-bridge] forced QQ main shim cannot find package.json: $QQ_APP_PACKAGE" >&2
+      exit 4
+    fi
+    return 1
+  fi
+  if ! command -v bwrap >/dev/null 2>&1; then
+    if main_shim_forced; then
+      echo "[web-bridge] forced QQ main shim requires bubblewrap (bwrap)" >&2
+      exit 4
+    fi
+    echo "[web-bridge] bubblewrap not found; falling back to executable CDP flags only" >&2
+    return 1
+  fi
+  # Probe user-namespace / mount-namespace support before preparing anything.
+  if ! bwrap --bind / / -- true >/dev/null 2>&1; then
+    if main_shim_forced; then
+      echo "[web-bridge] forced QQ main shim: bwrap is installed but cannot create a mount namespace" >&2
+      exit 4
+    fi
+    echo "[web-bridge] bwrap overlay unavailable on this host; falling back to executable CDP flags only" >&2
+    return 1
+  fi
+
+  local shim_base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+  SHIM_DIR="$(mktemp -d "$shim_base/web-bridge-qq-shim.XXXXXX")"
+  if ! node src/qq-main-shim.mjs --package "$QQ_APP_PACKAGE" --output "$SHIM_DIR" >/dev/null; then
+    rm -rf "$SHIM_DIR" >/dev/null 2>&1 || true
+    SHIM_DIR=""
+    if main_shim_forced; then exit 4; fi
+    echo "[web-bridge] could not prepare QQ main shim; falling back to executable CDP flags only" >&2
+    return 1
+  fi
+  USE_MAIN_SHIM=1
+  echo "[web-bridge] prepared temporary QQ main-entry overlay (host package.json is not modified)"
+  return 0
+}
+
+launch_qq_main_shim() {
+  # The first bind mirrors the host filesystem into a private mount namespace;
+  # the second masks only QQ's package.json with our temporary copy. The copy's
+  # main points to a user-owned loader under SHIM_DIR, which is visible through
+  # the root bind. QQ and its children inherit the overlay, while /opt is never
+  # changed on the host.
+  bwrap \
+    --die-with-parent \
+    --bind / / \
+    --ro-bind "$SHIM_DIR/package.json" "$QQ_APP_PACKAGE" \
+    -- \
+    "$QQ_BIN" \
+      "--remote-debugging-address=$CDP_HOST" \
+      "--remote-debugging-port=$CDP_PORT" \
+      "$@" &
+  QQ_PID=$!
+}
+
+launch_qq_best() {
+  if [[ "$USE_MAIN_SHIM" == "1" ]]; then
+    launch_qq_main_shim "$@"
+  else
+    launch_qq_direct "$@"
+  fi
+}
+
 echo "[web-bridge] QQ executable ($QQ_DETECT_SOURCE): $QQ_BIN"
 if [[ "$QQ_BIN" == /opt/QQ/qq || "$QQ_BIN" == /opt/qq/qq ]]; then
-  echo "[web-bridge] using direct packaged Electron host (preferred for Chromium/CDP switches)"
+  echo "[web-bridge] using direct packaged Electron host"
 elif [[ "$QQ_BIN" == */linuxqq ]]; then
-  echo "[web-bridge] warning: selected a linuxqq launcher/wrapper; if CDP does not open, try QQ_BIN=/opt/QQ/qq" >&2
+  echo "[web-bridge] warning: selected a linuxqq launcher/wrapper; prefer QQ_BIN=/opt/QQ/qq for CDP" >&2
 fi
 echo "[web-bridge] private CDP endpoint: $CDP_HOST:$CDP_PORT"
 
 # Bring the browser endpoint up before QQ finishes booting. The host already has
-# a reconnecting attach loop, so the Web UI can show meaningful waiting/syncing
-# state during QQ startup rather than appearing late.
+# a reconnecting attach loop, so the Web UI can show waiting/syncing state.
 node src/host.mjs &
 BRIDGE_PID=$!
 echo "[web-bridge] browser endpoint: http://$WEB_HOST:$WEB_PORT"
 
-# Experimental compatibility path only. QQ 3.2.33-52892 is known to reject
-# --inspect-brk when its Electron nodeCliInspect fuse is disabled, so ordinary
-# Chromium remote debugging on the direct /opt/QQ/qq host is the default.
+prepare_main_shim || true
+
+# Experimental inspector path only. Known-current Linux QQ rejects --inspect-brk
+# because its Electron nodeCliInspect fuse is disabled. If explicitly enabled,
+# fall back to the main-entry overlay rather than to argv-only launch.
 if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP" != "off" ]]; then
   INSPECTOR_HOST="127.0.0.1"
   INSPECTOR_PORT="$(free_loopback_port)"
   echo "[web-bridge] experimental Electron inspector bootstrap enabled: $INSPECTOR_HOST:$INSPECTOR_PORT"
-  launch_qq "--inspect-brk=$INSPECTOR_HOST:$INSPECTOR_PORT" "$@"
+  launch_qq_direct "--inspect-brk=$INSPECTOR_HOST:$INSPECTOR_PORT" "$@"
   echo "[web-bridge] QQ PID: $QQ_PID"
 
   if ! node src/electron-cdp-bootstrap.mjs \
@@ -127,18 +222,40 @@ if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP"
     --cdp-host "$CDP_HOST" \
     --cdp-port "$CDP_PORT" \
     --timeout "${WEB_BRIDGE_QQ_BOOTSTRAP_TIMEOUT_MS:-15000}"; then
-    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with normal CDP flags" >&2
+    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with main-entry/argv fallback" >&2
     kill "$QQ_PID" >/dev/null 2>&1 || true
     wait "$QQ_PID" 2>/dev/null || true
     QQ_PID=""
     sleep 0.2
-    launch_qq "$@"
+    launch_qq_best "$@"
     echo "[web-bridge] QQ PID (fallback): $QQ_PID"
   fi
 else
-  launch_qq "$@"
+  launch_qq_best "$@"
   echo "[web-bridge] QQ PID: $QQ_PID"
 fi
+
+# Emit one actionable diagnostic early instead of waiting a full attach timeout.
+(
+  sleep "${WEB_BRIDGE_CDP_DIAG_DELAY_SEC:-12}"
+  if ! node - "$CDP_HOST" "$CDP_PORT" <<'NODE' >/dev/null 2>&1
+const [, , host, port] = process.argv;
+try {
+  const response = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
+  process.exit(response.ok ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+  then
+    if [[ "$USE_MAIN_SHIM" == "1" ]]; then
+      echo "[web-bridge] CDP is still unreachable after startup even with the QQ main-entry shim; look above for 'QQ main shim injected Chromium CDP switches'" >&2
+    else
+      echo "[web-bridge] CDP is still unreachable after startup; main-entry shim was not active (install/enable bwrap or set WEB_BRIDGE_QQ_MAIN_SHIM=1 for a hard failure)" >&2
+    fi
+  fi
+) &
+DIAG_PID=$!
 
 set +e
 wait -n "$QQ_PID" "$BRIDGE_PID"
