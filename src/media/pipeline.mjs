@@ -30,7 +30,7 @@ function metadataValues(entry, info, config, youtubeAccount) {
   };
 }
 
-async function processEntry(config, state, youtubeAccount, entry, { signal, dryRun = false } = {}) {
+async function processEntry(config, state, youtubeAccount, entry, { signal, dryRun = false, logger = console } = {}) {
   await state.discovered(youtubeAccount.id, entry);
   if (!state.canRun(youtubeAccount.id, entry.id)) return { status: 'skipped', entry };
   if (dryRun) return { status: 'planned', entry, youtubeAccount: youtubeAccount.id };
@@ -41,19 +41,19 @@ async function processEntry(config, state, youtubeAccount, entry, { signal, dryR
   await state.markRunning(youtubeAccount.id, entry);
 
   try {
-    console.log(`[media] ${key}: downloading ${entry.webpageUrl}`);
+    logger.log(`[media] ${key}: downloading ${entry.webpageUrl}`);
     const downloaded = await downloadYoutubeVideo(config, youtubeAccount, entry, jobDir, { signal });
     const values = metadataValues(entry, downloaded.info, config, youtubeAccount);
     await writeJsonAtomic(path.join(jobDir, 'metadata.json'), { entry, info: downloaded.info, values });
 
-    console.log(`[media] ${key}: extracting ASR audio`);
+    logger.log(`[media] ${key}: extracting ASR audio`);
     const audioPath = await extractAsrAudio(config, downloaded.videoPath, jobDir, { signal });
 
-    console.log(`[media] ${key}: transcribing with ${config.asr.backend}`);
+    logger.log(`[media] ${key}: transcribing with ${config.asr.backend}`);
     const transcript = await transcribeAudio(config, audioPath, { signal });
     await writeJsonAtomic(path.join(jobDir, 'transcript.json'), transcript.payload);
 
-    console.log(`[media] ${key}: translating ${transcript.segments.length} segments with ${config.translation.backend}`);
+    logger.log(`[media] ${key}: translating ${transcript.segments.length} segments with ${config.translation.backend}`);
     const translated = await translateSegments(config, transcript.segments, { signal });
     await writeJsonAtomic(path.join(jobDir, 'translated.json'), { segments: translated });
     await writeFile(path.join(jobDir, 'translated.srt'), segmentsToSrt(translated), 'utf8');
@@ -61,7 +61,7 @@ async function processEntry(config, state, youtubeAccount, entry, { signal, dryR
 
     let uploadPath = downloaded.videoPath;
     if (config.burnSubtitles) {
-      console.log(`[media] ${key}: burning subtitles`);
+      logger.log(`[media] ${key}: burning subtitles`);
       uploadPath = await burnSubtitles(config, downloaded.videoPath, jobDir, { signal });
     }
 
@@ -71,7 +71,7 @@ async function processEntry(config, state, youtubeAccount, entry, { signal, dryR
     const description = renderTemplate(config.descriptionTemplate, values);
     const tags = unique([...config.tags, ...youtubeAccount.tags, ...biliAccount.tags]);
 
-    console.log(`[media] ${key}: uploading with Bilibili account ${biliId}`);
+    logger.log(`[media] ${key}: uploading with Bilibili account ${biliId}`);
     const upload = await uploadToBilibili(config, biliAccount, uploadPath, {
       title,
       description,
@@ -90,11 +90,11 @@ async function processEntry(config, state, youtubeAccount, entry, { signal, dryR
     };
     await state.markCompleted(youtubeAccount.id, entry.id, result);
     if (!config.keepArtifacts) await rm(jobDir, { recursive: true, force: true });
-    console.log(`[media] ${key}: completed${upload.bvid ? ` as ${upload.bvid}` : ''}`);
+    logger.log(`[media] ${key}: completed${upload.bvid ? ` as ${upload.bvid}` : ''}`);
     return { status: 'completed', entry, ...result };
   } catch (error) {
     await state.markFailed(youtubeAccount.id, entry.id, error);
-    console.error(`[media] ${key}: failed: ${error.message}`);
+    logger.error(`[media] ${key}: failed: ${error.message}`);
     return { status: 'failed', entry, error };
   }
 }
@@ -120,14 +120,14 @@ function retryCandidates(config, state) {
   return result;
 }
 
-export async function runMediaOnce(config, { signal, dryRun = false } = {}) {
+export async function runMediaOnce(config, { signal, dryRun = false, logger = console } = {}) {
   await ensureDir(config.workDir);
   const state = await new MediaState(config).load();
   const candidates = retryCandidates(config, state);
   const candidateKeys = new Set(candidates.map(({ account, entry }) => state.key(account.id, entry.id)));
 
   for (const account of config.youtubeAccounts.filter((item) => item.enabled)) {
-    console.log(`[media] discovering YouTube account ${account.id}`);
+    logger.log(`[media] discovering YouTube account ${account.id}`);
     try {
       const entries = await discoverYoutube(config, account, { signal });
       for (const entry of entries) {
@@ -138,7 +138,7 @@ export async function runMediaOnce(config, { signal, dryRun = false } = {}) {
         candidates.push({ account, entry, retry: false });
       }
     } catch (error) {
-      console.error(`[media] discovery failed for ${account.id}: ${error.message}`);
+      logger.error(`[media] discovery failed for ${account.id}: ${error.message}`);
     }
   }
 
@@ -147,14 +147,14 @@ export async function runMediaOnce(config, { signal, dryRun = false } = {}) {
   const results = [];
   for (const candidate of selected) {
     if (signal?.aborted) break;
-    results.push(await processEntry(config, state, candidate.account, candidate.entry, { signal, dryRun }));
+    results.push(await processEntry(config, state, candidate.account, candidate.entry, { signal, dryRun, logger }));
   }
   return { discovered: candidates.length, selected: selected.length, results, stateFile: state.file };
 }
 
-export async function runMediaLoop(config, { signal } = {}) {
+export async function runMediaLoop(config, { signal, logger = console } = {}) {
   while (!signal?.aborted) {
-    await runMediaOnce(config, { signal });
+    await runMediaOnce(config, { signal, logger });
     await sleep(config.pollIntervalSeconds * 1000, signal).catch((error) => {
       if (!signal?.aborted) throw error;
     });
