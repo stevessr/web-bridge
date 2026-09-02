@@ -14,19 +14,20 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
   assert.equal(original.main, './application/app_launcher/index.js');
 });
 
-test('loader exposes Electron webContents.debugger without probing commands during attach', () => {
+test('loader bypasses QQ DevTools Runtime with Electron webContents APIs', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
   assert.match(source, /webContents\.getAllWebContents\(\)/);
-  assert.match(source, /debuggerCandidates/);
-  assert.match(source, /wc\.debugger\.attach\('1\.3'\)/);
-  assert.match(source, /wc\.debugger\.attach\(\)/);
-  assert.match(source, /target\.debugger\.sendCommand\(message\.method/);
-  assert.match(source, /#\\\/main/);
-  assert.match(source, /no usable renderer debugger target/);
-  assert.match(source, /QQ webContents\.debugger bridge listening/);
+  assert.match(source, /transport: 'electron-webcontents'/);
+  assert.match(source, /target\.executeJavaScript/);
+  assert.match(source, /target\.sendInputEvent/);
+  assert.match(source, /target\.insertText/);
+  assert.match(source, /DOM\.setFileInputFiles/);
+  assert.match(source, /Runtime\.bindingCalled/);
+  assert.match(source, /WEB_BRIDGE_SHIM_POLL_MS/);
+  assert.match(source, /QQ Electron hybrid bridge listening/);
   assert.match(source, /require\(entry\)/);
-  assert.doesNotMatch(source, /sendCommand\('Runtime\.enable'\)/);
-  assert.doesNotMatch(source, /sendCommand\('Page\.enable'\)/);
+  assert.doesNotMatch(source, /\.debugger\.attach\(/);
+  assert.doesNotMatch(source, /\.debugger\.sendCommand\(/);
   assert.doesNotMatch(source, /appendSwitch\('remote-debugging-port'/);
   assert.doesNotMatch(source, /--no-sandbox/);
 });
