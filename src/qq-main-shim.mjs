@@ -1,6 +1,6 @@
 import { constants as fsConstants } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export function buildShimPackage(packageJson, loaderEntry) {
@@ -18,16 +18,104 @@ export function buildLoaderSource(originalMain) {
   if (typeof originalMain !== 'string' || !originalMain.trim()) throw new Error('originalMain is required');
   return `'use strict';\n` +
     `const path = require('node:path');\n` +
-    `const { app } = require('electron');\n` +
+    `const net = require('node:net');\n` +
+    `const { app, webContents } = require('electron');\n` +
     `const originalMain = ${JSON.stringify(originalMain)};\n` +
     `const host = process.env.WEB_BRIDGE_CDP_HOST || '127.0.0.1';\n` +
-    `const port = String(process.env.WEB_BRIDGE_CDP_PORT || '');\n` +
-    `if (!/^\\d+$/.test(port)) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');\n` +
-    `app.commandLine.removeSwitch('remote-debugging-address');\n` +
-    `app.commandLine.removeSwitch('remote-debugging-port');\n` +
-    `app.commandLine.appendSwitch('remote-debugging-address', host);\n` +
-    `app.commandLine.appendSwitch('remote-debugging-port', port);\n` +
-    `process.stderr.write('[web-bridge] QQ main shim injected Chromium CDP switches: ' + host + ':' + port + ' (resourcesPath=' + process.resourcesPath + ')\\n');\n` +
+    `const port = Number(process.env.WEB_BRIDGE_CDP_PORT || 0);\n` +
+    `const token = process.env.WEB_BRIDGE_QQ_SHIM_TOKEN || '';\n` +
+    `if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('[web-bridge] WEB_BRIDGE_CDP_PORT is missing or invalid');\n` +
+    `function targetInfo(wc) {\n` +
+    `  if (!wc || wc.isDestroyed()) return null;\n` +
+    `  let kind = '';\n` +
+    `  try { kind = wc.getType?.() || ''; } catch {}\n` +
+    `  if (kind && !['window', 'browserView', 'webview', 'offscreen'].includes(kind)) return null;\n` +
+    `  let title = ''; let url = '';\n` +
+    `  try { title = wc.getTitle?.() || ''; } catch {}\n` +
+    `  try { url = wc.getURL?.() || ''; } catch {}\n` +
+    `  return { id: String(wc.id), type: 'page', title: title || 'QQ NT', url };\n` +
+    `}\n` +
+    `function startDebuggerBridge() {\n` +
+    `  const server = net.createServer((socket) => {\n` +
+    `    socket.setNoDelay(true);\n` +
+    `    socket.setEncoding('utf8');\n` +
+    `    let buffer = '';\n` +
+    `    let target = null;\n` +
+    `    let ownsDebugger = false;\n` +
+    `    let cleaned = false;\n` +
+    `    const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\\n'); };\n` +
+    `    const onDebuggerMessage = (_event, method, params, sessionId) => {\n` +
+    `      const message = { method, params: params || {} };\n` +
+    `      if (sessionId) message.sessionId = sessionId;\n` +
+    `      send(message);\n` +
+    `    };\n` +
+    `    const onDebuggerDetach = (_event, reason) => {\n` +
+    `      send({ method: '__webBridgeShim.detached', params: { reason: reason || 'detached' } });\n` +
+    `      socket.end();\n` +
+    `    };\n` +
+    `    const cleanup = () => {\n` +
+    `      if (cleaned) return; cleaned = true;\n` +
+    `      if (target && !target.isDestroyed()) {\n` +
+    `        try { target.debugger.removeListener('message', onDebuggerMessage); } catch {}\n` +
+    `        try { target.debugger.removeListener('detach', onDebuggerDetach); } catch {}\n` +
+    `        if (ownsDebugger) { try { if (target.debugger.isAttached()) target.debugger.detach(); } catch {} }\n` +
+    `      }\n` +
+    `      target = null; ownsDebugger = false;\n` +
+    `    };\n` +
+    `    async function handle(message) {\n` +
+    `      const id = message && message.id;\n` +
+    `      if (token && message?.token !== token) { send({ id, error: { code: -32001, message: 'unauthorized shim debugger client' } }); return; }\n` +
+    `      if (message?.op === 'list') {\n` +
+    `        const targets = webContents.getAllWebContents().map(targetInfo).filter(Boolean);\n` +
+    `        send({ id, result: targets });\n` +
+    `        return;\n` +
+    `      }\n` +
+    `      if (message?.op === 'attach') {\n` +
+    `        cleanup(); cleaned = false;\n` +
+    `        const wc = webContents.fromId(Number(message.targetId));\n` +
+    `        if (!wc || wc.isDestroyed()) { send({ id, error: { code: -32002, message: 'renderer target no longer exists' } }); return; }\n` +
+    `        target = wc;\n` +
+    `        try {\n` +
+    `          if (!target.debugger.isAttached()) { target.debugger.attach('1.3'); ownsDebugger = true; }\n` +
+    `          target.debugger.on('message', onDebuggerMessage);\n` +
+    `          target.debugger.on('detach', onDebuggerDetach);\n` +
+    `          send({ id, result: { attached: true, targetId: String(target.id) } });\n` +
+    `        } catch (error) {\n` +
+    `          target = null; ownsDebugger = false;\n` +
+    `          send({ id, error: { code: -32003, message: error?.message || String(error) } });\n` +
+    `        }\n` +
+    `        return;\n` +
+    `      }\n` +
+    `      if (message?.method) {\n` +
+    `        if (!target || target.isDestroyed()) { send({ id, error: { code: -32004, message: 'no renderer target attached' } }); return; }\n` +
+    `        try {\n` +
+    `          const result = await target.debugger.sendCommand(message.method, message.params || {});\n` +
+    `          send({ id, result: result || {} });\n` +
+    `        } catch (error) {\n` +
+    `          send({ id, error: { code: -32005, message: error?.message || String(error) } });\n` +
+    `        }\n` +
+    `      }\n` +
+    `    }\n` +
+    `    socket.on('data', (chunk) => {\n` +
+    `      buffer += chunk;\n` +
+    `      if (buffer.startsWith('GET ') || buffer.startsWith('HEAD ')) { socket.end('HTTP/1.1 404 Not Found\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n'); return; }\n` +
+    `      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { socket.destroy(); return; }\n` +
+    `      let newline;\n` +
+    `      while ((newline = buffer.indexOf('\\n')) >= 0) {\n` +
+    `        const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);\n` +
+    `        if (!line) continue;\n` +
+    `        let message; try { message = JSON.parse(line); } catch { continue; }\n` +
+    `        Promise.resolve(handle(message)).catch((error) => send({ id: message?.id, error: { code: -32099, message: error?.message || String(error) } }));\n` +
+    `      }\n` +
+    `    });\n` +
+    `    socket.on('close', cleanup);\n` +
+    `    socket.on('error', cleanup);\n` +
+    `  });\n` +
+    `  server.on('error', (error) => process.stderr.write('[web-bridge] QQ debugger shim server error: ' + (error?.stack || error) + '\\n'));\n` +
+    `  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ webContents.debugger bridge listening: ' + host + ':' + port + ' (resourcesPath=' + process.resourcesPath + ')\\n'));\n` +
+    `  app.once('before-quit', () => { try { server.close(); } catch {} });\n` +
+    `}\n` +
+    `startDebuggerBridge();\n` +
     `const appRoot = path.join(process.resourcesPath, 'app');\n` +
     `const entry = path.isAbsolute(originalMain) ? originalMain : path.resolve(appRoot, originalMain);\n` +
     `require(entry);\n` +
@@ -45,11 +133,10 @@ export async function prepareMainShim({ packagePath, outputDir }) {
   await mkdir(absoluteOutput, { recursive: true, mode: 0o700 });
   const loaderPath = join(absoluteOutput, '.web-bridge-main-shim.cjs');
   const packageOutputPath = join(absoluteOutput, 'package.json');
-  const loaderEntry = relative(absoluteOutput, loaderPath) || '.web-bridge-main-shim.cjs';
-  const normalizedLoaderEntry = loaderEntry.startsWith('./') || loaderEntry.startsWith('../') ? loaderEntry : `./${loaderEntry}`;
+  const loaderEntry = './.web-bridge-main-shim.cjs';
   await writeFile(loaderPath, buildLoaderSource(originalMain), { mode: 0o600 });
-  await writeFile(packageOutputPath, `${JSON.stringify(buildShimPackage(packageJson, normalizedLoaderEntry), null, 2)}\n`, { mode: 0o600 });
-  return { packagePath: packageOutputPath, loaderPath, loaderEntry: normalizedLoaderEntry, originalMain };
+  await writeFile(packageOutputPath, `${JSON.stringify(buildShimPackage(packageJson, loaderEntry), null, 2)}\n`, { mode: 0o600 });
+  return { packagePath: packageOutputPath, loaderPath, loaderEntry, originalMain };
 }
 
 async function mirrorDirectory(sourceDir, destinationDir, excludedNames = new Set()) {
