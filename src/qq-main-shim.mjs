@@ -111,14 +111,8 @@ function startElectronBridge() {
       }, pollMs);
       dirtyPoll.unref?.();
     };
-    const installBindings = async () => {
-      if (!target || target.isDestroyed() || !bindings.size) return;
-      const names = JSON.stringify([...bindings]);
-      await target.executeJavaScript('(function(){for(const n of ' + names + '){if(typeof globalThis[n]!=="function")globalThis[n]=function(){};}})()', true);
-    };
     const installScripts = async () => {
       if (!target || target.isDestroyed()) return;
-      await installBindings().catch(() => {});
       for (const source of scripts) {
         if (!target || target.isDestroyed()) return;
         await target.executeJavaScript(source, true).catch(() => {});
@@ -230,7 +224,6 @@ function startElectronBridge() {
         const name = String(params?.name || '');
         if (!name) throw new Error('binding name is required');
         bindings.add(name);
-        await installBindings();
         startDirtyPoll();
         return {};
       }
