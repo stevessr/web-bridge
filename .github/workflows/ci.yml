@@ -31,6 +31,7 @@ jobs:
           for file in src/media/*.mjs; do node --check "$file"; done
           node --check public/client.js
           node --check public/media/app.js
+          node --check public/media/qr-login.js
           python3 -m py_compile scripts/asr-faster-whisper.py
           bash -n scripts/qq-web-bridge.sh
       - run: node src/qq-detect.mjs --help

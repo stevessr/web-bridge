@@ -1,11 +1,12 @@
 # Media WebUI
 
-The `feat/youtube-auto-fansub-bilibili` branch includes a dependency-free WebUI for the YouTube -> ASR -> translation -> subtitles -> Bilibili pipeline.
+The `feat/youtube-auto-fansub-bilibili` branch includes a lightweight WebUI for the YouTube -> ASR -> translation -> subtitles -> Bilibili pipeline.
 
 ## Start
 
 ```bash
 cp config/media.example.json config/media.json
+npm install
 npm run media:web -- --config config/media.json
 ```
 
@@ -36,10 +37,50 @@ The token can be entered in **诊断与日志 -> WebUI 访问**. The browser sto
 
 For public deployments, place the service behind HTTPS and an authenticated reverse proxy even when the built-in token is enabled.
 
+## Bilibili QR-code login
+
+Each configured Bilibili account in the overview has a **扫码登录** button. The flow is:
+
+1. Configure a writable `cookieFile` for that Bilibili account in `media.json`.
+2. Open the WebUI and click **扫码登录** next to the target account.
+3. Scan the QR code with the Bilibili mobile app and confirm the login on the phone.
+4. The WebUI polls the BiliTV QR-login endpoint until confirmation.
+5. On success, the server atomically writes a biliup-compatible `LoginInfo` JSON credential to that account's `cookieFile`.
+6. Subsequent uploads automatically use the credential through `biliup --user-cookie`.
+
+The QR code is normally valid for about three minutes. Expired codes can be refreshed directly in the dialog. Multiple Bilibili accounts are isolated by independent in-memory QR sessions.
+
+Security properties:
+
+- `auth_code`, cookies, access tokens and refresh tokens never leave the server API.
+- The browser receives only an opaque random session ID, QR image data and coarse login status.
+- QR sessions exist only in memory and expire automatically.
+- Credential files are written atomically and set to mode `0600` on Unix.
+- The media pipeline and QR login are mutually exclusive so an upload cannot race a credential replacement.
+- QR login endpoints use the same WebUI Bearer authentication as all other `/api/*` routes.
+
+Example account configuration:
+
+```json
+{
+  "bilibili": {
+    "accounts": [
+      {
+        "id": "default",
+        "cookieFile": "../secrets/bilibili-default.json",
+        "tid": 17,
+        "copyright": 2
+      }
+    ]
+  }
+}
+```
+
 ## Features
 
 - Pipeline overview and runtime status.
 - YouTube subscription account and Bilibili account overview.
+- Per-account Bilibili QR-code login.
 - One-shot execution and dry-run execution.
 - Start/stop the automatic polling loop.
 - Job list with status/search filters.
@@ -51,7 +92,7 @@ For public deployments, place the service behind HTTPS and an authenticated reve
 
 ## API
 
-The browser uses the same local management API. When `WEB_BRIDGE_MEDIA_WEB_TOKEN` is set, all `/api/*` routes require:
+When `WEB_BRIDGE_MEDIA_WEB_TOKEN` is set, all `/api/*` routes require:
 
 ```text
 Authorization: Bearer <token>
@@ -69,30 +110,36 @@ Available endpoints:
 | `POST` | `/api/loop/stop` | Stop the automatic polling loop |
 | `POST` | `/api/doctor` | Run environment checks |
 | `POST` | `/api/jobs/requeue` | Requeue a failed/dead task |
+| `POST` | `/api/bilibili/qr/start` | Create a QR session for `{ "accountId": "..." }` |
+| `GET` | `/api/bilibili/qr/status?sessionId=...` | Poll scan/confirmation status; saves credential on success |
+| `POST` | `/api/bilibili/qr/cancel` | Cancel an in-memory QR session |
 
-Configuration writes and manual requeue actions are rejected while the media pipeline is running to avoid state/config races.
+Configuration writes are rejected while the media pipeline or a QR login is active. Manual requeue is rejected while the media pipeline is running.
 
 ## Credentials
 
 Do not put API secrets directly into `media.json`.
 
-- ASR/translation configuration stores the **environment variable name**, such as `OPENAI_API_KEY`.
+- ASR/translation configuration stores the environment variable name, such as `OPENAI_API_KEY`.
 - YouTube login state is referenced through `cookiesFile` / `cookiesFromBrowser`.
-- Bilibili login state is referenced through an independent cookie file.
+- Bilibili login state is referenced through an independent JSON credential file and can be created by QR login.
 - Real `config/media.json`, cookies, secrets, and `.web-bridge-media/` are ignored by Git.
 
 ## Architecture
 
-The WebUI intentionally has no React/Vite/npm frontend build dependency:
+The dashboard itself still has no frontend build step. QR image encoding uses the small server-side `qrcode` npm package.
 
 ```text
 public/media/index.html
 public/media/style.css
 public/media/app.js
+public/media/qr-login.js
+public/media/qr-login.css
         |
         v
 src/media/web.mjs
         |
+        +--> bilibili-login.mjs
         +--> config.mjs / state.mjs
         +--> doctorMedia()
         +--> runMediaOnce()

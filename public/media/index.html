@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#111318">
   <title>web-bridge · 自动烤肉控制台</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/qr-login.css">
 </head>
 <body>
   <div class="shell">
@@ -100,7 +101,7 @@
 
           <article class="panel">
             <div class="panel-head">
-              <div><h3>Bilibili 投稿账号</h3><p>按 YouTube 来源路由到不同投稿账号。</p></div>
+              <div><h3>Bilibili 投稿账号</h3><p>支持为每个投稿账号直接扫码登录，凭据保存到其 cookieFile。</p></div>
               <span class="count-badge" id="bilibili-count">0</span>
             </div>
             <div class="account-list" id="bilibili-accounts"></div>
@@ -119,28 +120,15 @@
       <section class="view" data-view-panel="jobs">
         <article class="panel full-panel">
           <div class="jobs-toolbar">
-            <div>
-              <h3>任务队列</h3>
-              <p>查看发现、处理中、失败与完成的视频。</p>
-            </div>
+            <div><h3>任务队列</h3><p>查看发现、处理中、失败与完成的视频。</p></div>
             <div class="filters">
               <input class="input search" id="job-search" placeholder="搜索标题 / Video ID / 账号">
               <select class="input" id="job-status-filter">
-                <option value="all">全部状态</option>
-                <option value="discovered">待处理</option>
-                <option value="running">处理中</option>
-                <option value="completed">已完成</option>
-                <option value="failed">失败待重试</option>
-                <option value="dead">已停止重试</option>
+                <option value="all">全部状态</option><option value="discovered">待处理</option><option value="running">处理中</option><option value="completed">已完成</option><option value="failed">失败待重试</option><option value="dead">已停止重试</option>
               </select>
             </div>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>视频</th><th>YouTube 账号</th><th>状态</th><th>尝试</th><th>更新时间</th><th>Bilibili</th><th></th></tr></thead>
-              <tbody id="jobs-body"></tbody>
-            </table>
-          </div>
+          <div class="table-wrap"><table><thead><tr><th>视频</th><th>YouTube 账号</th><th>状态</th><th>尝试</th><th>更新时间</th><th>Bilibili</th><th></th></tr></thead><tbody id="jobs-body"></tbody></table></div>
           <div class="empty hidden" id="jobs-empty">没有匹配的任务</div>
         </article>
       </section>
@@ -150,27 +138,15 @@
           <article class="panel editor-panel">
             <div class="panel-head editor-head">
               <div><h3>media.json</h3><p>保存前会使用与 CLI 相同的规则进行完整校验。</p></div>
-              <div class="editor-actions">
-                <button class="button ghost" id="format-config-button">格式化</button>
-                <button class="button ghost" id="reset-config-button">放弃修改</button>
-                <button class="button primary" id="save-config-button">保存配置</button>
-              </div>
+              <div class="editor-actions"><button class="button ghost" id="format-config-button">格式化</button><button class="button ghost" id="reset-config-button">放弃修改</button><button class="button primary" id="save-config-button">保存配置</button></div>
             </div>
             <textarea id="config-editor" spellcheck="false" aria-label="媒体配置 JSON"></textarea>
             <div class="editor-status" id="editor-status">尚未修改</div>
           </article>
-
           <aside class="panel config-guide">
-            <h3>关键配置</h3>
-            <dl id="config-summary"></dl>
-            <div class="callout">
-              <strong>凭据不会写进这里</strong>
-              <p>API key 只配置环境变量名称；YouTube / Bilibili 登录态使用独立 cookie 文件路径。</p>
-            </div>
-            <div class="callout warning">
-              <strong>yt-dlp 附加参数</strong>
-              <p>参数以 argv 数组传递，不经过 shell。危险执行型参数默认被拦截。</p>
-            </div>
+            <h3>关键配置</h3><dl id="config-summary"></dl>
+            <div class="callout"><strong>凭据不会写进这里</strong><p>API key 只配置环境变量名称；YouTube / Bilibili 登录态使用独立 cookie 文件路径。Bilibili 可直接在概览中扫码登录。</p></div>
+            <div class="callout warning"><strong>yt-dlp 附加参数</strong><p>参数以 argv 数组传递，不经过 shell。危险执行型参数默认被拦截。</p></div>
           </aside>
         </div>
       </section>
@@ -178,33 +154,24 @@
       <section class="view" data-view-panel="diagnostics">
         <div class="diagnostic-grid">
           <article class="panel doctor-panel">
-            <div class="panel-head">
-              <div><h3>环境诊断</h3><p>检查 yt-dlp、ffmpeg、biliup、ASR 与账号文件。</p></div>
-              <button class="button primary" id="doctor-button">运行 Doctor</button>
-            </div>
+            <div class="panel-head"><div><h3>环境诊断</h3><p>检查 yt-dlp、ffmpeg、biliup、ASR 与账号文件。</p></div><button class="button primary" id="doctor-button">运行 Doctor</button></div>
             <div id="doctor-results" class="doctor-list"><div class="empty-inline">尚未运行诊断</div></div>
           </article>
-
           <article class="panel auth-panel">
-            <h3>WebUI 访问</h3>
-            <p>如果服务启用了 Bearer token，请在此输入。只保存在当前浏览器会话。</p>
+            <h3>WebUI 访问</h3><p>如果服务启用了 Bearer token，请在此输入。只保存在当前浏览器会话。</p>
             <label>访问 Token<input class="input" id="token-input" type="password" autocomplete="off" placeholder="WEB_BRIDGE_MEDIA_WEB_TOKEN"></label>
             <button class="button secondary" id="save-token-button">保存并重新连接</button>
           </article>
         </div>
-
         <article class="panel log-panel">
-          <div class="panel-head">
-            <div><h3>实时日志</h3><p>前端每秒增量拉取管理服务日志。</p></div>
-            <button class="text-button" id="clear-log-button">清空本地显示</button>
-          </div>
+          <div class="panel-head"><div><h3>实时日志</h3><p>前端每秒增量拉取管理服务日志。</p></div><button class="text-button" id="clear-log-button">清空本地显示</button></div>
           <div class="terminal" id="log-output" aria-live="polite"></div>
         </article>
       </section>
     </main>
   </div>
-
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
   <script type="module" src="/app.js"></script>
+  <script type="module" src="/qr-login.js"></script>
 </body>
 </html>

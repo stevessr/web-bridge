@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { access, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { timingSafeEqual } from 'node:crypto';
+import { createBilibiliQrLoginService, saveBilibiliCredential } from './bilibili-login.mjs';
 import { normalizeMediaConfig } from './config.mjs';
 import { doctorMedia, runMediaLoop, runMediaOnce } from './pipeline.mjs';
 import { MediaState } from './state.mjs';
@@ -70,8 +71,7 @@ function secureEqual(left, right) {
 function authorized(req, token) {
   if (!token) return true;
   const header = String(req.headers.authorization || '');
-  if (!header.startsWith('Bearer ')) return false;
-  return secureEqual(header.slice(7), token);
+  return header.startsWith('Bearer ') && secureEqual(header.slice(7), token);
 }
 
 async function readBody(req) {
@@ -96,7 +96,11 @@ async function readBody(req) {
   }
 }
 
-function publicConfig(config) {
+async function exists(file) {
+  try { await access(file); return true; } catch { return false; }
+}
+
+async function publicConfig(config) {
   if (!config) return null;
   return {
     workDir: config.workDir,
@@ -116,16 +120,19 @@ function publicConfig(config) {
     })),
     asr: { backend: config.asr.backend, model: config.asr.model },
     translation: { backend: config.translation.backend, model: config.translation.model, targetLanguage: config.translation.targetLanguage || config.targetLanguage },
-    bilibiliAccounts: config.bilibili.accounts.map((account) => ({ id: account.id, enabled: account.enabled }))
+    bilibiliAccounts: await Promise.all(config.bilibili.accounts.map(async (account) => ({
+      id: account.id,
+      enabled: account.enabled,
+      credentialConfigured: Boolean(account.cookieFile),
+      credentialPresent: Boolean(account.cookieFile) && await exists(path.resolve(config.configDir, account.cookieFile))
+    })))
   };
 }
 
 function summarizeJobs(state) {
   const jobs = Object.values(state?.jobs || {});
   const counts = { total: jobs.length, discovered: 0, running: 0, completed: 0, failed: 0, dead: 0 };
-  for (const job of jobs) {
-    if (Object.hasOwn(counts, job.status)) counts[job.status] += 1;
-  }
+  for (const job of jobs) if (Object.hasOwn(counts, job.status)) counts[job.status] += 1;
   return counts;
 }
 
@@ -134,7 +141,9 @@ async function serveStatic(res, pathname) {
     '/': 'index.html',
     '/index.html': 'index.html',
     '/app.js': 'app.js',
-    '/style.css': 'style.css'
+    '/style.css': 'style.css',
+    '/qr-login.js': 'qr-login.js',
+    '/qr-login.css': 'qr-login.css'
   };
   const file = mapping[pathname];
   if (!file) return false;
@@ -152,10 +161,11 @@ async function serveStatic(res, pathname) {
   return true;
 }
 
-export function createMediaWebApp({ configFile, token = '' }) {
+export function createMediaWebApp({ configFile, token = '', bilibiliLogin = createBilibiliQrLoginService() }) {
   const absoluteConfig = path.resolve(configFile);
   const configDir = path.dirname(absoluteConfig);
   const logs = [];
+  const qrSessions = new Map();
   let runPromise = null;
   let loopPromise = null;
   let loopController = null;
@@ -174,40 +184,53 @@ export function createMediaWebApp({ configFile, token = '' }) {
   async function loadRawAndConfig() {
     const raw = await readJson(absoluteConfig, null);
     if (!raw) return { raw: null, config: null, configError: `Media config not found: ${absoluteConfig}` };
-    try {
-      return { raw, config: normalizeMediaConfig(raw, { configDir }), configError: null };
-    } catch (error) {
-      return { raw, config: null, configError: error.message };
-    }
+    try { return { raw, config: normalizeMediaConfig(raw, { configDir }), configError: null }; }
+    catch (error) { return { raw, config: null, configError: error.message }; }
   }
 
   async function loadState(config) {
     if (!config) return { version: 1, jobs: {} };
-    const state = await new MediaState(config).load();
-    return state.data;
+    return (await new MediaState(config).load()).data;
+  }
+
+  function cleanupQrSessions() {
+    const now = Date.now();
+    for (const [id, session] of qrSessions) if (Date.parse(session.expiresAt) <= now) qrSessions.delete(id);
+  }
+
+  function hasActiveQrSessions() {
+    cleanupQrSessions();
+    return qrSessions.size > 0;
   }
 
   function runtime() {
+    cleanupQrSessions();
     return {
       busy: Boolean(runPromise || loopPromise),
       mode: loopPromise ? 'loop' : runPromise ? 'once' : 'idle',
       loopRunning: Boolean(loopPromise),
+      qrLogins: qrSessions.size,
       lastRun
     };
   }
 
-  async function runOnce({ dryRun = false } = {}) {
+  function assertPipelineCanStart() {
     if (runPromise || loopPromise) {
       const error = new Error('Media pipeline is already running');
       error.statusCode = 409;
       throw error;
     }
-    const { config, configError } = await loadRawAndConfig();
-    if (!config) {
-      const error = new Error(configError);
-      error.statusCode = 400;
+    if (hasActiveQrSessions()) {
+      const error = new Error('Finish or cancel the active Bilibili QR login before starting the pipeline');
+      error.statusCode = 409;
       throw error;
     }
+  }
+
+  async function runOnce({ dryRun = false } = {}) {
+    assertPipelineCanStart();
+    const { config, configError } = await loadRawAndConfig();
+    if (!config) { const error = new Error(configError); error.statusCode = 400; throw error; }
     const controller = new AbortController();
     const startedAt = new Date().toISOString();
     addLog('info', `[web] starting ${dryRun ? 'dry-run' : 'one-shot'} pipeline`);
@@ -221,32 +244,21 @@ export function createMediaWebApp({ configFile, token = '' }) {
       lastRun = { startedAt, finishedAt: new Date().toISOString(), dryRun, ok: false, error: error.message };
       addLog('error', `[web] one-shot failed: ${error.message}`);
       throw error;
-    } finally {
-      runPromise = null;
-    }
+    } finally { runPromise = null; }
   }
 
   async function startLoop() {
-    if (runPromise || loopPromise) {
-      const error = new Error('Media pipeline is already running');
-      error.statusCode = 409;
-      throw error;
-    }
+    assertPipelineCanStart();
     const { config, configError } = await loadRawAndConfig();
-    if (!config) {
-      const error = new Error(configError);
-      error.statusCode = 400;
-      throw error;
-    }
+    if (!config) { const error = new Error(configError); error.statusCode = 400; throw error; }
     loopController = new AbortController();
+    const controller = loopController;
     const startedAt = new Date().toISOString();
     addLog('info', `[web] automatic loop started; interval=${config.pollIntervalSeconds}s`);
-    loopPromise = runMediaLoop(config, { signal: loopController.signal, logger })
-      .then(() => {
-        lastRun = { startedAt, finishedAt: new Date().toISOString(), loop: true, ok: true };
-      })
+    loopPromise = runMediaLoop(config, { signal: controller.signal, logger })
+      .then(() => { lastRun = { startedAt, finishedAt: new Date().toISOString(), loop: true, ok: true }; })
       .catch((error) => {
-        if (!loopController?.signal.aborted) {
+        if (!controller.signal.aborted) {
           lastRun = { startedAt, finishedAt: new Date().toISOString(), loop: true, ok: false, error: error.message };
           addLog('error', `[web] automatic loop failed: ${error.message}`);
         }
@@ -254,7 +266,7 @@ export function createMediaWebApp({ configFile, token = '' }) {
       .finally(() => {
         addLog('info', '[web] automatic loop stopped');
         loopPromise = null;
-        loopController = null;
+        if (loopController === controller) loopController = null;
       });
     return { started: true, intervalSeconds: config.pollIntervalSeconds };
   }
@@ -266,6 +278,73 @@ export function createMediaWebApp({ configFile, token = '' }) {
     return { stopped: true };
   }
 
+  async function startQrLogin(accountId) {
+    if (runPromise || loopPromise) {
+      const error = new Error('Stop the media pipeline before logging in to Bilibili');
+      error.statusCode = 409;
+      throw error;
+    }
+    const { config, configError } = await loadRawAndConfig();
+    if (!config) { const error = new Error(configError); error.statusCode = 400; throw error; }
+    const account = config.bilibili.accounts.find((item) => item.id === accountId);
+    if (!account) { const error = new Error(`Unknown Bilibili account: ${accountId}`); error.statusCode = 404; throw error; }
+    if (!account.cookieFile) {
+      const error = new Error(`Bilibili account ${accountId} must configure cookieFile before QR login`);
+      error.statusCode = 400;
+      throw error;
+    }
+    cleanupQrSessions();
+    for (const [id, session] of qrSessions) if (session.accountId === accountId) qrSessions.delete(id);
+    const started = await bilibiliLogin.start();
+    const sessionId = randomBytes(24).toString('base64url');
+    qrSessions.set(sessionId, {
+      accountId,
+      authCode: started.authCode,
+      pollTs: started.pollTs,
+      expiresAt: started.expiresAt
+    });
+    addLog('info', `[web] Bilibili QR login started for account ${accountId}`);
+    return { sessionId, accountId, qrDataUrl: started.qrDataUrl, expiresAt: started.expiresAt };
+  }
+
+  async function pollQrLogin(sessionId) {
+    cleanupQrSessions();
+    const session = qrSessions.get(sessionId);
+    if (!session) {
+      const error = new Error('Bilibili QR login session expired or does not exist');
+      error.statusCode = 410;
+      throw error;
+    }
+    const result = await bilibiliLogin.poll(session);
+    if (result.status === 'expired') {
+      qrSessions.delete(sessionId);
+      addLog('warn', `[web] Bilibili QR login expired for account ${session.accountId}`);
+      return { status: 'expired', accountId: session.accountId };
+    }
+    if (result.status !== 'success') return { status: result.status, accountId: session.accountId, expiresAt: session.expiresAt };
+
+    const { config, configError } = await loadRawAndConfig();
+    if (!config) { const error = new Error(configError); error.statusCode = 400; throw error; }
+    const account = config.bilibili.accounts.find((item) => item.id === session.accountId);
+    if (!account?.cookieFile) {
+      const error = new Error(`Bilibili account ${session.accountId} no longer has cookieFile configured`);
+      error.statusCode = 409;
+      throw error;
+    }
+    await saveBilibiliCredential(path.resolve(config.configDir, account.cookieFile), result.credential);
+    qrSessions.delete(sessionId);
+    addLog('info', `[web] Bilibili QR login completed for account ${session.accountId}`);
+    return { status: 'success', accountId: session.accountId, credentialSaved: true, mid: result.mid };
+  }
+
+  function cancelQrLogin(sessionId) {
+    const session = qrSessions.get(sessionId);
+    if (!session) return { cancelled: false };
+    qrSessions.delete(sessionId);
+    addLog('info', `[web] Bilibili QR login cancelled for account ${session.accountId}`);
+    return { cancelled: true, accountId: session.accountId };
+  }
+
   async function handler(req, res) {
     try {
       const url = new URL(req.url || '/', 'http://localhost');
@@ -274,7 +353,6 @@ export function createMediaWebApp({ configFile, token = '' }) {
         if (await serveStatic(res, url.pathname)) return;
         return json(res, 404, { error: 'Not found' });
       }
-
       if (!authorized(req, token)) {
         res.setHeader('www-authenticate', 'Bearer');
         return json(res, 401, { error: 'Unauthorized' });
@@ -285,7 +363,7 @@ export function createMediaWebApp({ configFile, token = '' }) {
         const state = await loadState(config);
         return json(res, 200, {
           configFile: absoluteConfig,
-          config: publicConfig(config),
+          config: await publicConfig(config),
           rawConfig: raw,
           configError,
           state,
@@ -294,14 +372,12 @@ export function createMediaWebApp({ configFile, token = '' }) {
           logTail: logs.slice(-80)
         });
       }
-
       if (req.method === 'GET' && url.pathname === '/api/logs') {
         const after = Number(url.searchParams.get('after') || 0);
         return json(res, 200, { logs: after ? logs.filter((entry) => entry.id > after) : logs.slice(-200), runtime: runtime() });
       }
-
       if (req.method === 'PUT' && url.pathname === '/api/config') {
-        if (runPromise || loopPromise) return json(res, 409, { error: 'Stop the media pipeline before changing configuration' });
+        if (runPromise || loopPromise || hasActiveQrSessions()) return json(res, 409, { error: 'Stop the pipeline and QR login before changing configuration' });
         const raw = await readBody(req);
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return json(res, 400, { error: 'Configuration must be a JSON object' });
         normalizeMediaConfig(raw, { configDir });
@@ -309,22 +385,14 @@ export function createMediaWebApp({ configFile, token = '' }) {
         addLog('info', '[web] configuration saved');
         return json(res, 200, { ok: true });
       }
-
       if (req.method === 'POST' && url.pathname === '/api/run') {
         const body = await readBody(req) || {};
         const result = await runOnce({ dryRun: body.dryRun === true });
         const cleanResults = result.results.map(({ error, ...item }) => error ? { ...item, error: error.message } : item);
         return json(res, 200, { ...result, results: cleanResults });
       }
-
-      if (req.method === 'POST' && url.pathname === '/api/loop/start') {
-        return json(res, 202, await startLoop());
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/loop/stop') {
-        return json(res, 200, stopLoop());
-      }
-
+      if (req.method === 'POST' && url.pathname === '/api/loop/start') return json(res, 202, await startLoop());
+      if (req.method === 'POST' && url.pathname === '/api/loop/stop') return json(res, 200, stopLoop());
       if (req.method === 'POST' && url.pathname === '/api/doctor') {
         const { config, configError } = await loadRawAndConfig();
         if (!config) return json(res, 400, { error: configError });
@@ -332,7 +400,6 @@ export function createMediaWebApp({ configFile, token = '' }) {
         addLog(checks.every((item) => item.ok) ? 'info' : 'warn', `[web] doctor finished: ${checks.filter((item) => item.ok).length}/${checks.length} checks passed`);
         return json(res, 200, { checks, ok: checks.every((item) => item.ok) });
       }
-
       if (req.method === 'POST' && url.pathname === '/api/jobs/requeue') {
         if (runPromise || loopPromise) return json(res, 409, { error: 'Stop the media pipeline before requeueing jobs' });
         const body = await readBody(req) || {};
@@ -344,7 +411,21 @@ export function createMediaWebApp({ configFile, token = '' }) {
         addLog('info', `[web] requeued ${body.key}`);
         return json(res, 200, { job });
       }
-
+      if (req.method === 'POST' && url.pathname === '/api/bilibili/qr/start') {
+        const body = await readBody(req) || {};
+        if (typeof body.accountId !== 'string' || !body.accountId) return json(res, 400, { error: 'accountId is required' });
+        return json(res, 201, await startQrLogin(body.accountId));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/bilibili/qr/status') {
+        const sessionId = url.searchParams.get('sessionId') || '';
+        if (!sessionId) return json(res, 400, { error: 'sessionId is required' });
+        return json(res, 200, await pollQrLogin(sessionId));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bilibili/qr/cancel') {
+        const body = await readBody(req) || {};
+        if (typeof body.sessionId !== 'string' || !body.sessionId) return json(res, 400, { error: 'sessionId is required' });
+        return json(res, 200, cancelQrLogin(body.sessionId));
+      }
       return json(res, 404, { error: 'API route not found' });
     } catch (error) {
       addLog('error', `[web] ${req.method} ${req.url}: ${error.message}`);
@@ -352,15 +433,13 @@ export function createMediaWebApp({ configFile, token = '' }) {
     }
   }
 
-  return { handler, runtime, logs };
+  return { handler, runtime, logs, qrSessions };
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) return usage();
-  if (!isLoopback(args.host) && !args.token) {
-    throw new Error('Refusing non-loopback media WebUI bind without WEB_BRIDGE_MEDIA_WEB_TOKEN or --token');
-  }
+  if (!isLoopback(args.host) && !args.token) throw new Error('Refusing non-loopback media WebUI bind without WEB_BRIDGE_MEDIA_WEB_TOKEN or --token');
   const app = createMediaWebApp({ configFile: args.config, token: args.token });
   const server = createServer(app.handler);
   server.listen(args.port, args.host, () => {
