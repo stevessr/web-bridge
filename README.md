@@ -2,37 +2,37 @@
 
 A DOM-reconstruction bridge for **QQ NT / closed-source Electron applications**.
 
-QQ NT remains the authoritative runtime on the host. Its renderer JavaScript, preload, Electron IPC, account state, filesystem access and native modules are not moved into the browser. The browser renders a sanitized DOM/CSS/state mirror and sends validated user input back to the host, where Chromium CDP reinjects it into the real QQ renderer.
+QQ NT remains the authoritative runtime on the host. Its renderer JavaScript, preload, Electron IPC, account state, filesystem access and native modules are not moved into the browser. The browser renders a sanitized DOM/CSS/state mirror and sends validated user input back to the host.
 
-> Current status: production-oriented beta. The protocol, security and deployment layers are hardened, but each QQ NT release still needs a real-host acceptance pass because Tencent can change internal renderer behavior at any time.
+> Current status: production-oriented beta. The protocol, security and deployment layers are hardened, but each QQ NT release still needs a real-host acceptance pass because Tencent can change Electron and renderer behavior at any time.
 
 ## Architecture
 
 ```text
-Browser                         Host
-┌──────────────────┐           ┌───────────────────────────────┐
-│ native DOM mirror│ <─patch── │ web-bridge                   │
-│ no QQ JavaScript │           │  DOM sanitizer / patch relay │
-│ resource tokens  │ ────────> │  resource + upload relay     │
-│ input capture    │ ──RPC────>│  allow-listed CDP input      │
-└──────────────────┘           └──────────────┬────────────────┘
-                                             │ private loopback CDP
-                                      ┌──────▼───────┐
-                                      │ QQ NT        │
-                                      │ renderer     │
-                                      │ preload / IPC│
-                                      │ Electron main│
-                                      └──────────────┘
+Browser                         Host / QQ process
+┌──────────────────┐           ┌──────────────────────────────────────┐
+│ native DOM mirror│ <─patch── │ web-bridge                           │
+│ no QQ JavaScript │           │  DOM sanitizer / patch relay         │
+│ resource tokens  │ ────────> │  resource + upload relay             │
+│ input capture    │ ──RPC────>│                                      │
+└──────────────────┘           │ private loopback debugger transport │
+                               │        │                             │
+                               │        ▼                             │
+                               │ QQ Main shim → webContents.debugger │
+                               │                     │                │
+                               │                     ▼                │
+                               │                QQ renderer           │
+                               └──────────────────────────────────────┘
 ```
 
-The client never receives QQ script bundles, preload objects, arbitrary CDP access or host-local resource paths.
+The client never receives QQ script bundles, preload objects, arbitrary debugger access or host-local resource paths.
 
 ## What is implemented
 
 - automatic Linux QQ NT executable discovery, preferring the packaged Electron host over launcher wrappers
-- random loopback-only CDP port by default
-- Linux QQ main-entry CDP injection through an ephemeral shadow Electron distribution
-- automatic target attach and reconnect
+- random loopback-only debugger endpoint by default
+- Linux QQ main-entry debugger bridge through a temporary shadow Electron distribution
+- automatic renderer target attach and reconnect
 - sanitized initial DOM snapshot
 - **revisioned incremental DOM/state/style patches**
 - snapshot resync on missed revisions, navigation, patch overflow or slow clients
@@ -42,7 +42,7 @@ The client never receives QQ script bundles, preload objects, arbitrary CDP acce
 - element-local canvas PNG fallback
 - mouse, right-click, hover, wheel, keyboard, paste and Chinese IME input
 - select controls and HTML file inputs
-- browser file upload → host temp file → `DOM.setFileInputFiles` → real QQ event chain
+- browser file upload → host temp file → real QQ event chain
 - basic media state mirroring
 - single-controller lease with additional read-only clients
 - input rate limiting and WebSocket backpressure isolation
@@ -62,35 +62,39 @@ pnpm doctor
 pnpm dev:qq
 ```
 
-The launcher discovers QQ automatically and prints the local browser endpoint. It chooses a private random CDP port unless `WEB_BRIDGE_CDP_PORT` is explicitly set.
+The launcher discovers QQ automatically and prints the local browser endpoint. It chooses a private random debugger port unless `WEB_BRIDGE_CDP_PORT` is explicitly set.
 
-Current Linux QQ builds such as `3.2.33-52892` can reject Electron's `--inspect-brk` flags and may also fail to open the DevTools HTTP endpoint when `--remote-debugging-port` is supplied only on the packaged executable command line. Electron's supported application-side mechanism is `app.commandLine.appendSwitch(...)` before the application becomes ready.
+### Why current Linux QQ uses a debugger shim
 
-`pnpm dev:qq` therefore prefers an **ephemeral shadow Electron distribution**:
+Linux QQ `3.2.33-52892` has been observed to reject Electron's Node inspector (`electron: bad option: --inspect-brk=...`) and to leave Chromium's `--remote-debugging-port` HTTP endpoint closed even when the switch is injected before QQ Main starts.
 
-1. read `/opt/QQ/resources/app/package.json` and remember its original `main` entry;
-2. copy only the QQ executable into a private user cache directory;
-3. symlink the rest of the installed QQ distribution/resources into that temporary directory;
-4. replace only the shadow copy of `resources/app/package.json` with a package that enters a tiny bridge loader;
-5. the loader calls `app.commandLine.appendSwitch('remote-debugging-address', ...)` and `app.commandLine.appendSwitch('remote-debugging-port', ...)` before loading QQ's original main entry;
-6. the real `/opt/QQ` tree is **never written or modified**.
+The bridge therefore no longer depends on Chromium's remote-debugging HTTP server for current QQ builds. Instead the QQ Main shim starts a private, per-launch authenticated loopback transport backed by Electron's `webContents.debugger` API. The host maps that transport to the same small CDP connection interface already used by the DOM bridge.
 
-Electron derives `process.resourcesPath` from the real executable path. Using a real temporary executable copy is therefore enough to make Electron select the shadow `resources` directory. This avoids Bubblewrap entirely: unprivileged Bubblewrap requires a user namespace, while Chromium also wants to create its Linux namespace sandbox. Nesting the two caused `/dev/null` visibility problems and a zygote `Invalid argument (22)` crash on QQ `3.2.33-52892`. The shadow launcher introduces no mount/user namespace, so Chromium keeps its normal Linux zygote/renderer sandbox.
+To load the shim without modifying `/opt/QQ`, `pnpm dev:qq` creates a temporary **shadow Electron distribution**:
+
+1. copy only `/opt/QQ/qq` into a private user cache directory;
+2. symlink the remaining QQ distribution and resources back to `/opt/QQ`;
+3. replace only the shadow copy of `resources/app/package.json`;
+4. run a tiny loader before QQ's original Main entry;
+5. start the loopback `webContents.debugger` bridge and then load QQ normally;
+6. remove the shadow tree when the launcher exits.
+
+No mount namespace, Bubblewrap, root privileges, or `--no-sandbox` flag is used. Chromium's normal Linux sandbox remains enabled.
 
 A successful startup should contain lines similar to:
 
 ```text
 [web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)
-[web-bridge] shadow executable: ~/.cache/web-bridge/qq-shadow.xxxxxx/qq
-[web-bridge] QQ main shim injected Chromium CDP switches: 127.0.0.1:33677 (resourcesPath=.../qq-shadow.xxxxxx/resources)
+[web-bridge] using Electron webContents.debugger transport; Chromium remote-debugging-port is not required
+[web-bridge] QQ webContents.debugger bridge listening: 127.0.0.1:33677 (...)
 ```
 
 Control this behavior with:
 
 ```bash
-WEB_BRIDGE_QQ_MAIN_SHIM=auto pnpm dev:qq   # default: use the shadow launcher when supported
-WEB_BRIDGE_QQ_MAIN_SHIM=1 pnpm dev:qq      # require it; fail instead of silently falling back
-WEB_BRIDGE_QQ_MAIN_SHIM=0 pnpm dev:qq      # disable it; argv-only CDP launch
+WEB_BRIDGE_QQ_MAIN_SHIM=auto pnpm dev:qq   # default
+WEB_BRIDGE_QQ_MAIN_SHIM=1 pnpm dev:qq      # require it; fail instead of falling back
+WEB_BRIDGE_QQ_MAIN_SHIM=0 pnpm dev:qq      # disable it; try ordinary Chromium CDP flags
 ```
 
 The old Node-inspector bootstrap is retained only for diagnostics on compatible Electron builds and is off by default:
@@ -115,7 +119,7 @@ QQ must be fully closed before `pnpm dev:qq`; Electron single-instance forwardin
 
 ## Exposing it to another machine
 
-Do **not** expose the CDP port. Put only the Web Bridge HTTP endpoint behind TLS and configure a token:
+Do **not** expose the private debugger transport. Put only the Web Bridge HTTP endpoint behind TLS and configure a token:
 
 ```bash
 WEB_BRIDGE_HOST=127.0.0.1
@@ -125,7 +129,7 @@ pnpm dev:qq
 
 Then reverse proxy `127.0.0.1:8080` with Caddy/Nginx. The browser uses HTTP Basic authentication; any username is accepted and the configured token is the password.
 
-If `WEB_BRIDGE_HOST` is non-loopback and no authentication token is configured, startup is refused unless the explicit unsafe override is set. A non-loopback CDP host is refused separately.
+If `WEB_BRIDGE_HOST` is non-loopback and no authentication token is configured, startup is refused unless the explicit unsafe override is set. A non-loopback debugger host is refused separately.
 
 See [`docs/PRODUCTION.md`](docs/PRODUCTION.md) and the files under [`deploy/`](deploy/).
 
@@ -148,14 +152,13 @@ The browser applies a patch only if `baseRevision` equals its current revision. 
 - `javascript:` navigation is removed.
 - password and file-input values are not serialized.
 - host-local app/resource URLs become random opaque resource tokens.
-- the browser cannot submit arbitrary JavaScript or CDP method names.
+- the browser cannot submit arbitrary JavaScript or debugger method names.
 - input messages are schema-normalized, size-limited and rate-limited.
 - file uploads use private temporary directories with size/TTL limits.
 - only one browser controls QQ by default; other sessions are read-only.
-- CDP is treated as a privileged internal interface and is loopback-only by default.
+- the QQ debugger bridge is loopback-only and requires a random per-launch token.
 - the Linux main-entry shim and shadow executable are user-owned, short-lived, and deleted when the launcher exits; `/opt/QQ` is not modified.
 - the shadow launcher does not disable Chromium's normal renderer sandbox.
-- the experimental Electron Node inspector path is disabled by default.
 
 ## Operational endpoints
 
@@ -171,13 +174,12 @@ DOM-native QQ UI is the primary target. Canvas currently uses element-local imag
 
 The shadow launcher depends on the packaged Electron layout (`<qq>/resources/app/package.json`) and on Electron deriving `process.resourcesPath` from the copied executable. If that layout changes, `auto` mode falls back to executable command-line switches and prints a diagnostic; `WEB_BRIDGE_QQ_MAIN_SHIM=1` converts the condition into a hard failure.
 
-Those limitations do not weaken the isolation model; they affect fidelity for specific UI paths. See the production acceptance checklist before certifying a QQ build.
-
 ## Development
 
 ```bash
 npm install --ignore-scripts
 npm test
+node --check src/cdp.mjs
 node --check src/host.mjs
 node --check src/injected.mjs
 node --check src/qq-main-shim.mjs
@@ -186,4 +188,4 @@ node --check public/client.js
 bash -n scripts/qq-web-bridge.sh
 ```
 
-This project does not patch or redistribute QQ NT. The temporary shadow distribution is created from the user's installed QQ and removed again by the launcher. You are responsible for complying with QQ's terms and applicable law.
+This project does not patch or redistribute QQ NT. You are responsible for complying with QQ's terms and applicable law.
