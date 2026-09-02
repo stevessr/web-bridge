@@ -36,7 +36,11 @@ function targetInfo(wc) {
   if (kind === 'devTools') return null;
   try { title = wc.getTitle?.() || ''; } catch {}
   try { url = wc.getURL?.() || ''; } catch {}
-  try { const owner = wc.getOwnerBrowserWindow?.(); visible = Boolean(owner?.isVisible?.()); focused = Boolean(owner?.isFocused?.()); } catch {}
+  try {
+    const owner = wc.getOwnerBrowserWindow?.();
+    visible = Boolean(owner?.isVisible?.());
+    focused = Boolean(owner?.isFocused?.());
+  } catch {}
   return { id: String(wc.id), type: 'page', title: title || url || 'QQ NT', url, kind, visible, focused, transport: 'electron-webcontents' };
 }
 
@@ -76,12 +80,17 @@ function modifiersFromMask(mask) {
   return result;
 }
 
+function modifierFlags(mask) {
+  const value = Number(mask) || 0;
+  return { altKey: Boolean(value & 1), ctrlKey: Boolean(value & 2), metaKey: Boolean(value & 4), shiftKey: Boolean(value & 8) };
+}
+
 function runtimeResult(value) {
   if (value === undefined) return { result: { type: 'undefined' } };
   if (value === null) return { result: { type: 'object', subtype: 'null', value: null } };
   const type = typeof value;
   if (type === 'bigint') return { result: { type: 'bigint', unserializableValue: String(value) + 'n' } };
-  if (type === 'number' && !Number.isFinite(value)) return { result: { type: 'number', unserializableValue: String(value) } };
+  if (type === 'number' && !Number.isFinite(value)) return { result: { type: 'number', unserializableValue: String(value) };
   return { result: { type, value } };
 }
 
@@ -109,13 +118,9 @@ function startElectronBridge() {
     const bindingMarker = '__WEB_BRIDGE_BINDING__' + Math.random().toString(36).slice(2) + ':';
     const send = (message) => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
 
-    const focusTarget = () => {
-      if (!target || target.isDestroyed()) return;
-      try {
-        const owner = target.getOwnerBrowserWindow?.();
-        if (owner?.isVisible?.()) owner.focus?.();
-      } catch {}
-      try { target.focus?.(); } catch {}
+    const hostWindowFocused = () => {
+      if (!target || target.isDestroyed()) return false;
+      try { return Boolean(target.getOwnerBrowserWindow?.()?.isFocused?.()); } catch { return false; }
     };
     const runRenderer = (source, label = 'renderer JavaScript') => {
       if (!target || target.isDestroyed()) return Promise.reject(new Error('no renderer target attached'));
@@ -163,10 +168,7 @@ function startElectronBridge() {
       }
     };
     const onDomReady = () => {
-      Promise.resolve()
-        .then(installBindings)
-        .then(installScripts)
-        .catch(() => {});
+      Promise.resolve().then(installBindings).then(installScripts).catch(() => {});
     };
     const onConsoleMessage = (...args) => {
       let message = '';
@@ -251,17 +253,60 @@ function startElectronBridge() {
       return {};
     }
 
+    function backgroundMouseSource(params) {
+      const type = String(params?.type || '');
+      const x = Math.round(Number(params?.x) || 0);
+      const y = Math.round(Number(params?.y) || 0);
+      const deltaX = Number(params?.deltaX) || 0;
+      const deltaY = Number(params?.deltaY) || 0;
+      const buttonName = String(params?.button || 'left');
+      const button = buttonName === 'right' ? 2 : buttonName === 'middle' ? 1 : 0;
+      const buttons = type === 'mousePressed' ? (button === 2 ? 2 : button === 1 ? 4 : 1) : 0;
+      const mods = modifierFlags(params?.modifiers);
+      return '(function(){' +
+        'const x=' + x + ',y=' + y + ',button=' + button + ',buttons=' + buttons + ';' +
+        'const target=document.elementFromPoint(x,y)||document.activeElement||document.body||document.documentElement;if(!target)return false;' +
+        'const base={bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,button:button,buttons:buttons,detail:' + (Number(params?.clickCount) || 1) + ',altKey:' + mods.altKey + ',ctrlKey:' + mods.ctrlKey + ',metaKey:' + mods.metaKey + ',shiftKey:' + mods.shiftKey + '};' +
+        'const pointer=(name)=>{try{if(globalThis.PointerEvent)target.dispatchEvent(new PointerEvent(name,Object.assign({pointerId:1,pointerType:"mouse",isPrimary:true},base)));}catch{}};' +
+        'const mouse=(name)=>{try{return target.dispatchEvent(new MouseEvent(name,base));}catch{return true;}};' +
+        (type === 'mouseMoved'
+          ? 'pointer("pointermove");mouse("mousemove");return true;'
+          : type === 'mousePressed'
+            ? 'pointer("pointerdown");mouse("mousedown");return true;'
+            : type === 'mouseReleased'
+              ? 'pointer("pointerup");mouse("mouseup");if(button===2)mouse("contextmenu");else if(button===1)mouse("auxclick");else mouse("click");return true;'
+              : type === 'mouseWheel'
+                ? 'const ev=new WheelEvent("wheel",Object.assign({},base,{deltaX:' + deltaX + ',deltaY:' + deltaY + ',deltaMode:0}));const allowed=target.dispatchEvent(ev);if(allowed){let el=target;while(el&&el!==document.documentElement){try{const s=getComputedStyle(el);if(/auto|scroll/.test((s.overflowX||"")+(s.overflowY||""))&&(el.scrollHeight>el.clientHeight||el.scrollWidth>el.clientWidth)){el.scrollLeft+=' + deltaX + ';el.scrollTop+=' + deltaY + ';break;}}catch{}el=el.parentElement;}}return true;'
+                : 'return false;') +
+        '})()';
+    }
+
+    function backgroundKeySource(params) {
+      const type = params?.type === 'keyUp' ? 'keyup' : params?.type === 'char' ? 'keypress' : 'keydown';
+      const mods = modifierFlags(params?.modifiers);
+      return '(function(){' +
+        'const target=document.activeElement||document.body||document.documentElement;if(!target)return false;' +
+        'const ev=new KeyboardEvent(' + JSON.stringify(type) + ',{bubbles:true,cancelable:true,composed:true,key:' + JSON.stringify(String(params?.key || '')) + ',code:' + JSON.stringify(String(params?.code || '')) + ',repeat:' + Boolean(params?.autoRepeat) + ',altKey:' + mods.altKey + ',ctrlKey:' + mods.ctrlKey + ',metaKey:' + mods.metaKey + ',shiftKey:' + mods.shiftKey + '});' +
+        'target.dispatchEvent(ev);return true;})()';
+    }
+
+    function backgroundInsertTextSource(text) {
+      return '(function(){' +
+        'const text=' + JSON.stringify(String(text || '')) + ';const el=document.activeElement;if(!el)return false;' +
+        'if(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement){const start=Number.isInteger(el.selectionStart)?el.selectionStart:el.value.length;const end=Number.isInteger(el.selectionEnd)?el.selectionEnd:start;el.setRangeText(text,start,end,"end");try{el.dispatchEvent(new InputEvent("input",{bubbles:true,composed:true,inputType:"insertText",data:text}));}catch{el.dispatchEvent(new Event("input",{bubbles:true}));}return true;}' +
+        'if(el.isContentEditable){try{document.execCommand("insertText",false,text);return true;}catch{}try{el.dispatchEvent(new InputEvent("beforeinput",{bubbles:true,cancelable:true,composed:true,inputType:"insertText",data:text}));el.textContent=(el.textContent||"")+text;el.dispatchEvent(new InputEvent("input",{bubbles:true,composed:true,inputType:"insertText",data:text}));return true;}catch{}}' +
+        'return false;})()';
+    }
+
     async function dispatchMouse(params) {
       const typeMap = { mouseMoved: 'mouseMove', mousePressed: 'mouseDown', mouseReleased: 'mouseUp', mouseWheel: 'mouseWheel' };
       const type = typeMap[params?.type];
       if (!type) throw new Error('unsupported mouse event type: ' + String(params?.type || ''));
-      focusTarget();
-      const event = {
-        type,
-        x: Math.round(Number(params?.x) || 0),
-        y: Math.round(Number(params?.y) || 0),
-        modifiers: modifiersFromMask(params?.modifiers)
-      };
+      if (!hostWindowFocused()) {
+        await runRenderer(backgroundMouseSource(params), 'background mouse input');
+        return { mode: 'background-dom' };
+      }
+      const event = { type, x: Math.round(Number(params?.x) || 0), y: Math.round(Number(params?.y) || 0), modifiers: modifiersFromMask(params?.modifiers) };
       if (type === 'mouseDown' || type === 'mouseUp') {
         event.button = params?.button || 'left';
         event.clickCount = Number(params?.clickCount) || 1;
@@ -272,16 +317,29 @@ function startElectronBridge() {
         event.canScroll = true;
       }
       target.sendInputEvent(event);
-      return {};
+      return { mode: 'native' };
     }
 
     async function dispatchKey(params) {
       const kind = params?.type === 'keyUp' ? 'keyUp' : params?.type === 'char' ? 'char' : 'keyDown';
       const keyCode = String(params?.key || params?.code || '');
       if (!keyCode) throw new Error('keyCode is required');
-      focusTarget();
+      if (!hostWindowFocused()) {
+        await runRenderer(backgroundKeySource(params), 'background keyboard input');
+        return { mode: 'background-dom' };
+      }
       target.sendInputEvent({ type: kind, keyCode, modifiers: modifiersFromMask(params?.modifiers), isAutoRepeat: Boolean(params?.autoRepeat) });
-      return {};
+      return { mode: 'native' };
+    }
+
+    async function insertText(params) {
+      const text = String(params?.text || '');
+      if (!hostWindowFocused()) {
+        await runRenderer(backgroundInsertTextSource(text), 'background text input');
+        return { mode: 'background-dom' };
+      }
+      await withTimeout(target.insertText(text), 'Input.insertText');
+      return { mode: 'native' };
     }
 
     async function command(method, params) {
@@ -303,11 +361,7 @@ function startElectronBridge() {
       if (method === 'Runtime.evaluate') return evaluate(params || {});
       if (method === 'Input.dispatchMouseEvent') return dispatchMouse(params || {});
       if (method === 'Input.dispatchKeyEvent') return dispatchKey(params || {});
-      if (method === 'Input.insertText') {
-        focusTarget();
-        await withTimeout(target.insertText(String(params?.text || '')), 'Input.insertText');
-        return {};
-      }
+      if (method === 'Input.insertText') return insertText(params || {});
       if (method === 'DOM.setFileInputFiles') return setFileInputFiles(params || {});
       throw Object.assign(new Error('unsupported by Electron hybrid bridge: ' + method), { code: -32601 });
     }
@@ -315,10 +369,7 @@ function startElectronBridge() {
     async function handle(message) {
       const id = message && message.id;
       if (token && message?.token !== token) { send({ id, error: { code: -32001, message: 'unauthorized shim client' } }); return; }
-      if (message?.op === 'list') {
-        send({ id, result: candidates().map((item) => item.info) });
-        return;
-      }
+      if (message?.op === 'list') { send({ id, result: candidates().map((item) => item.info) }); return; }
       if (message?.op === 'attach') {
         cleanupTarget();
         cleaned = false;
@@ -336,7 +387,7 @@ function startElectronBridge() {
         target.on('render-process-gone', onGone);
         target.on('destroyed', onDestroyed);
         startDirtyPoll();
-        send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target), mode: 'electron-hybrid-push' } });
+        send({ id, result: { attached: true, targetId: String(target.id), target: targetInfo(target), mode: 'electron-hybrid-push-focus-preserving' } });
         return;
       }
       if (message?.method) {
@@ -367,7 +418,7 @@ function startElectronBridge() {
     socket.on('error', cleanup);
   });
   server.on('error', (error) => process.stderr.write('[web-bridge] QQ Electron bridge server error: ' + (error?.stack || error) + '\n'));
-  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ Electron hybrid bridge listening: ' + host + ':' + port + ' (push-sync, resourcesPath=' + process.resourcesPath + ')\n'));
+  server.listen(port, host, () => process.stderr.write('[web-bridge] QQ Electron hybrid bridge listening: ' + host + ':' + port + ' (push-sync, focus-preserving, resourcesPath=' + process.resourcesPath + ')\n'));
   app.once('before-quit', () => { try { server.close(); } catch {} });
 }
 
@@ -442,14 +493,7 @@ export async function prepareShadowQQ({ qqBin, outputDir }) {
   await mirrorDirectory(sourceApp, shadowApp, new Set(['package.json', '.web-bridge-main-shim.cjs']));
   const shim = await prepareMainShim({ packagePath: sourcePackage, outputDir: shadowApp });
 
-  return {
-    ...shim,
-    sourceBin,
-    shadowBin,
-    shadowRoot,
-    shadowResources,
-    shadowApp
-  };
+  return { ...shim, sourceBin, shadowBin, shadowRoot, shadowResources, shadowApp };
 }
 
 function parseArgs(argv) {
