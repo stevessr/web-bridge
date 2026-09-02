@@ -1,7 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'models/account_route.dart';
-import 'services/matrix_provider.dart';
 import 'services/server_gateway.dart';
 
 void main() => runApp(const WebBridgeApp());
@@ -14,69 +15,286 @@ class WebBridgeApp extends StatelessWidget {
     return MaterialApp(
       title: 'web-bridge',
       theme: ThemeData(colorSchemeSeed: Colors.blue, useMaterial3: true),
-      darkTheme: ThemeData(colorSchemeSeed: Colors.blue, brightness: Brightness.dark, useMaterial3: true),
-      home: const BootstrapPage(),
+      darkTheme: ThemeData(
+        colorSchemeSeed: Colors.blue,
+        brightness: Brightness.dark,
+        useMaterial3: true,
+      ),
+      home: const HomePage(),
     );
   }
 }
 
-class BootstrapPage extends StatefulWidget {
-  const BootstrapPage({super.key});
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
 
   @override
-  State<BootstrapPage> createState() => _BootstrapPageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _BootstrapPageState extends State<BootstrapPage> {
-  final serverController = TextEditingController(text: 'ws://127.0.0.1:8787/v1/ws');
+class _HomePageState extends State<HomePage> {
+  final serverController = TextEditingController(
+    text: 'ws://127.0.0.1:8787/v1/ws',
+  );
   final tokenController = TextEditingController(text: 'dev-client-token');
+  final accounts = <String, AccountRoute>{};
+  final activeAccount = <ChatNetwork, String>{};
+
   ServerGateway? gateway;
+  StreamSubscription<Map<String, dynamic>>? subscription;
   String status = 'Disconnected';
 
   Future<void> connect() async {
-    final next = ServerGateway(Uri.parse(serverController.text), tokenController.text);
+    await subscription?.cancel();
+    await gateway?.close();
+
+    final next = ServerGateway(
+      Uri.parse(serverController.text),
+      tokenController.text,
+    );
     await next.connect();
-    setState(() {
-      gateway = next;
-      status = 'Server connected';
-    });
+    subscription = next.events.listen(handleFrame);
+    gateway = next;
+    next.listAccounts();
+
+    if (mounted) {
+      setState(() => status = 'Server connected');
+    }
+  }
+
+  void handleFrame(Map<String, dynamic> frame) {
+    switch (frame['type']) {
+      case 'accounts':
+        final snapshots = frame['accounts'] as List<dynamic>;
+        for (final raw in snapshots) {
+          final account = AccountRoute.fromJson(raw as Map<String, dynamic>);
+          accounts[account.key] = account;
+          activeAccount.putIfAbsent(account.network, () => account.key);
+        }
+      case 'account_changed':
+        final account = AccountRoute.fromJson(
+          frame['account'] as Map<String, dynamic>,
+        );
+        accounts[account.key] = account;
+        activeAccount.putIfAbsent(account.network, () => account.key);
+      case 'account_removed':
+        final raw = frame['account'] as Map<String, dynamic>;
+        final network = ChatNetwork.values.byName(raw['network'] as String);
+        final key = '${network.name}:${raw['id']}';
+        accounts.remove(key);
+        if (activeAccount[network] == key) {
+          final replacement = accounts.values
+              .where((account) => account.network == network)
+              .firstOrNull;
+          if (replacement == null) {
+            activeAccount.remove(network);
+          } else {
+            activeAccount[network] = replacement.key;
+          }
+        }
+      case 'error':
+        status = '${frame['code']}: ${frame['message']}';
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> addServerAccount() async {
+    if (gateway == null) {
+      setState(() => status = 'Connect the server first');
+      return;
+    }
+
+    var network = ChatNetwork.matrix;
+    final idController = TextEditingController();
+    final nameController = TextEditingController();
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Add server-owned account'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<ChatNetwork>(
+                initialValue: network,
+                items: ChatNetwork.values
+                    .map(
+                      (item) => DropdownMenuItem(
+                        value: item,
+                        child: Text(item.name.toUpperCase()),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) => setDialogState(
+                  () => network = value ?? network,
+                ),
+                decoration: const InputDecoration(labelText: 'Network'),
+              ),
+              TextField(
+                controller: idController,
+                decoration: const InputDecoration(labelText: 'Account ID'),
+              ),
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Display name (optional)',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (accepted == true && idController.text.trim().isNotEmpty) {
+      gateway!.registerAccount(
+        network: network.name,
+        accountId: idController.text.trim(),
+        displayName: nameController.text.trim().isEmpty
+            ? null
+            : nameController.text.trim(),
+        route: RouteMode.server.name,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    subscription?.cancel();
+    gateway?.close();
+    serverController.dispose();
+    tokenController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    const routes = [
-      AccountRoute(network: ChatNetwork.qq, mode: RouteMode.server),
-      AccountRoute(network: ChatNetwork.matrix, mode: RouteMode.client),
-      AccountRoute(network: ChatNetwork.telegram, mode: RouteMode.client),
-    ];
-
     return Scaffold(
-      appBar: AppBar(title: const Text('web-bridge v2')),
+      appBar: AppBar(
+        title: const Text('web-bridge v2'),
+        actions: [
+          IconButton(
+            onPressed: addServerAccount,
+            tooltip: 'Add account',
+            icon: const Icon(Icons.person_add_alt_1),
+          ),
+        ],
+      ),
       body: ListView(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         children: [
-          Text('Greenfield unified messenger', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 8),
+          Text(
+            'One Rust core · multiple accounts',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 6),
           Text(status),
+          const SizedBox(height: 20),
+          TextField(
+            controller: serverController,
+            decoration: const InputDecoration(labelText: 'Server WebSocket URL'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: tokenController,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'Client token'),
+          ),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            onPressed: connect,
+            icon: const Icon(Icons.cloud_done_outlined),
+            label: const Text('Connect server'),
+          ),
           const SizedBox(height: 24),
-          TextField(controller: serverController, decoration: const InputDecoration(labelText: 'Server WebSocket URL')),
-          const SizedBox(height: 12),
-          TextField(controller: tokenController, obscureText: true, decoration: const InputDecoration(labelText: 'Client token')),
-          const SizedBox(height: 12),
-          FilledButton(onPressed: connect, child: const Text('Connect server')),
-          const SizedBox(height: 28),
-          ...routes.map((route) => ListTile(
-                title: Text(route.network.name),
-                subtitle: Text(route.mode == RouteMode.server ? 'Managed by server' : 'Managed on this device'),
-                trailing: route.network == ChatNetwork.qq ? const Icon(Icons.lock_outline) : const Icon(Icons.swap_horiz),
-              )),
-          const Divider(),
-          const Text('Matrix client mode uses the Extera-compatible Matrix Dart SDK. Telegram provider UI/runtime is the next provider milestone.'),
+          for (final network in ChatNetwork.values) _networkSection(network),
         ],
       ),
     );
   }
+
+  Widget _networkSection(ChatNetwork network) {
+    final items = accounts.values
+        .where((account) => account.network == network)
+        .toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      network.name.toUpperCase(),
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  if (network == ChatNetwork.qq)
+                    const Tooltip(
+                      message: 'QQ is always routed through the server',
+                      child: Icon(Icons.lock_outline, size: 18),
+                    ),
+                ],
+              ),
+            ),
+            if (items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Text('No accounts'),
+              )
+            else
+              for (final account in items)
+                RadioListTile<String>(
+                  value: account.key,
+                  groupValue: activeAccount[network],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => activeAccount[network] = value);
+                    }
+                  },
+                  title: Text(account.label),
+                  subtitle: Text(
+                    '${account.accountId} · ${account.mode.name} · ${account.status.name}',
+                  ),
+                  secondary: _statusIcon(account.status),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statusIcon(AccountStatus status) {
+    return Icon(
+      switch (status) {
+        AccountStatus.online => Icons.check_circle_outline,
+        AccountStatus.connecting => Icons.sync,
+        AccountStatus.error => Icons.error_outline,
+        AccountStatus.offline => Icons.circle_outlined,
+      },
+    );
+  }
 }
 
-// Keep the import alive while the account setup UI is still minimal.
-final matrixProviderFactory = MatrixProvider.new;
+extension FirstOrNull<T> on Iterable<T> {
+  T? get firstOrNull {
+    final iterator = this.iterator;
+    return iterator.moveNext() ? iterator.current : null;
+  }
+}
