@@ -157,7 +157,13 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
         let account = account.clone();
         let state = state.clone();
         async move {
-            let raw = serde_json::to_value(&event).ok();
+            let body = event.content.body().to_owned();
+            let raw = Some(serde_json::json!({
+                "event_id": event.event_id.to_string(),
+                "sender": event.sender.to_string(),
+                "room_id": room.room_id().to_string(),
+                "body": body,
+            }));
             let message = UnifiedMessage {
                 id: event.event_id.to_string(),
                 account,
@@ -168,9 +174,7 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
                 sender_id: event.sender.to_string(),
                 sender_name: None,
                 timestamp: Utc::now(),
-                parts: vec![MessagePart::Text {
-                    text: event.content.body().to_owned(),
-                }],
+                parts: vec![MessagePart::Text { text: body }],
                 raw,
             };
             let _ = state.events.send(ServerFrame::Message { message });
