@@ -1,39 +1,31 @@
 # web-bridge v2
 
-Greenfield unified messenger architecture using one shared Rust core for both the headless server and the Flutter client.
+Greenfield unified messenger architecture using one shared Rust Core for both the headless server and Flutter client.
 
-## Hard routing rules
+## Routing rules
 
-- **QQ** always uses `server` routing. NapCatQQ connects to the Rust runtime through reverse OneBot 11 WebSocket; Flutter never talks to NapCat directly.
-- **Matrix** can use `server` or `client` routing per account.
-- **Telegram** can use `server` or `client` routing per account.
-- QQ, Matrix and Telegram all support multiple simultaneous accounts.
+- **QQ** is always `server` routed. NapCatQQ connects to the Rust server through reverse OneBot 11 WebSocket; Flutter never talks to NapCat directly.
+- **Matrix** can be `server` or `client` routed per account.
+- **Telegram** can be `server` or `client` routed per account.
+- All three networks support multiple simultaneous accounts.
 
-An account is identified by `(network, account_id)`. Selecting another account in the UI changes only the active account; it does not sign out, stop or replace the other accounts.
+An account is identified by `(network, account_id)`. Switching the active UI account never signs out or replaces the other accounts.
 
-## One core, two shells
+## One Core, two shells
 
-- `crates/protocol` — shared wire types.
-- `crates/core` — the only Rust business core: account registry, route policy, provider state and adapters.
-- `crates/server` — thin headless launcher that starts `web-bridge-core` in server mode.
-- `client/rust` — thin Flutter FFI wrapper that starts the same `web-bridge-core` in client mode.
+- `crates/protocol` — shared wire/account/message/command types.
+- `crates/core` — account registry, route policy, shared command executor and QQ/Matrix/Telegram providers.
+- `crates/server` — thin daemon launcher running Core in server mode.
+- `client/rust` — Flutter native library running the same Core in client mode and bridging remote server-owned accounts.
 - `client` — Flutter presentation layer.
 
-There is intentionally no independent “server implementation” and “client implementation”. Provider work belongs in `crates/core`; the server is a daemon shell and the client adds Flutter UI around the embedded core.
+Provider/network behavior belongs in Rust Core. Dart should contain UI, credential input and event rendering only.
 
-## Protocol v2 account model
+## Protocol v2
 
-The v2 protocol includes:
+Protocol v2 includes account registration/removal/routing, Matrix and Telegram login commands, Telegram auth challenges, provider disconnect, unified message sending, account snapshots, messages, acknowledgements and errors.
 
-- `list_accounts`
-- `register_account`
-- `remove_account`
-- `set_account_route`
-- `send_message`
-- account added/changed/removed events
-- per-account online/offline/error state
-
-This means two Matrix accounts may use different routes, several Telegram accounts may stay connected together, and multiple NapCat sessions may expose several QQ accounts through one server.
+The embedded client Core automatically executes client-routed Matrix/Telegram commands locally and forwards server-routed commands through its Rust `RemoteBridge`. QQ is always forwarded.
 
 ## Development server
 
@@ -50,16 +42,21 @@ Endpoints:
 - `GET /v1/ws?token=...` — client protocol v2
 - `GET /onebot/v11/ws` — NapCat reverse WebSocket (`Authorization: Bearer ...`, `X-Self-ID` required)
 
-## Current implementation
+NapCat should use array message format and connect to `ws(s)://SERVER/onebot/v11/ws` as a WebSocket client.
 
-Implemented:
+## Provider status
 
-- shared Rust runtime used by both shells;
-- multi-account registry for all three networks;
-- per-account route selection;
-- QQ server-only invariant enforced in protocol/core/native wrapper;
-- multiple simultaneous NapCat connections keyed by QQ self ID;
-- common OneBot message receive/send conversion;
-- account state events and v2 account-management commands.
+Implemented in shared Rust Core:
 
-Matrix and Telegram transport engines, durable encrypted credential storage, durable message history and the full Flutter conversation UI are being added inside this shared-core architecture rather than as duplicated client/server implementations.
+- multi-account account registry and route policy;
+- multi-account NapCat/QQ reverse WebSocket receive/send path;
+- Matrix password login, per-account SQLite store, continuous sync, incoming room messages and room text sending;
+- Telegram per-account SQLite sessions, login-code/2FA challenges, update streaming, peer cache and text sending;
+- client-to-server Rust RemoteBridge and server-account mirroring;
+- shared command executor used by both server and client runtimes;
+- Flutter-facing FRB API surface in `client/rust/src/api.rs`;
+- CI for Rust fmt/clippy/tests and Flutter analyze.
+
+Current integration work is focused on generated FRB bindings, removing the legacy Dart `ServerGateway`, Matrix/Telegram login UI, durable settings/history/media and production authentication.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed topology and invariants.
