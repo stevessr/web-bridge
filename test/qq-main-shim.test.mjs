@@ -26,9 +26,12 @@ test('loader bypasses QQ DevTools Runtime with Electron webContents APIs', () =>
   assert.match(source, /Runtime\.bindingCalled/);
   assert.match(source, /WEB_BRIDGE_SHIM_POLL_MS/);
   assert.match(source, /QQ Electron hybrid bridge listening/);
+  assert.match(source, /send\(\{ id, result: \{ attached: true/);
+  assert.match(source, /bindings\.add\(name\);\s*startDirtyPoll\(\);/);
   assert.match(source, /require\(entry\)/);
   assert.doesNotMatch(source, /\.debugger\.attach\(/);
   assert.doesNotMatch(source, /\.debugger\.sendCommand\(/);
+  assert.doesNotMatch(source, /Runtime\.addBinding[\s\S]*?await target\.executeJavaScript/);
   assert.doesNotMatch(source, /appendSwitch\('remote-debugging-port'/);
   assert.doesNotMatch(source, /--no-sandbox/);
 });
