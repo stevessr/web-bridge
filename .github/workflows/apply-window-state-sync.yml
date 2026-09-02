@@ -2,11 +2,13 @@ name: apply-window-state-sync
 on:
   push:
     branches: [feat/window-state-sync]
+    paths:
+      - '.github/workflows/apply-window-state-sync.yml'
+      - 'scripts/.apply-window-state-sync.mjs'
 permissions:
   contents: write
 jobs:
   apply:
-    if: github.event.head_commit.message != 'feat: synchronize remote QQ window state'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
