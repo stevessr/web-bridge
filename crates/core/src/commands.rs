@@ -1,12 +1,15 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use tokio::{sync::oneshot, time::timeout};
 use web_bridge_protocol::{AccountRef, AccountStatus, Command, Network, ServerFrame};
 
 use crate::{
     napcat,
     providers::{matrix, telegram},
-    state::CoreState,
+    state::{CoreState, PendingQqAction},
 };
+
+const QQ_ACTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub async fn execute(
     request_id: uuid::Uuid,
@@ -99,7 +102,7 @@ pub async fn execute(
                     network: Network::Telegram,
                     id: account_id,
                 };
-                let mut frames = vec![ServerFrame::Ack { request_id }];
+                let mut frames = Vec::new();
                 if let Some(challenge) = challenge {
                     frames.push(ServerFrame::AuthChallenge {
                         request_id: Some(request_id),
@@ -107,6 +110,7 @@ pub async fn execute(
                         challenge,
                     });
                 }
+                frames.push(ServerFrame::Ack { request_id });
                 frames
             }
             Err(error) => vec![provider_error(request_id, "telegram_login_failed", error)],
@@ -118,7 +122,7 @@ pub async fn execute(
             };
             match telegram::submit_code(Arc::clone(state), &account, code).await {
                 Ok((_, challenge)) => {
-                    let mut frames = vec![ServerFrame::Ack { request_id }];
+                    let mut frames = Vec::new();
                     if let Some(challenge) = challenge {
                         frames.push(ServerFrame::AuthChallenge {
                             request_id: Some(request_id),
@@ -126,6 +130,7 @@ pub async fn execute(
                             challenge,
                         });
                     }
+                    frames.push(ServerFrame::Ack { request_id });
                     frames
                 }
                 Err(error) => vec![provider_error(request_id, "telegram_code_failed", error)],
@@ -198,19 +203,44 @@ async fn send_qq(
     let sender = state
         .qq
         .get(account)
+        .map(|entry| entry.value().clone())
         .ok_or_else(|| anyhow::anyhow!("QQ account {} has no NapCat connection", account.id))?;
-    let action = napcat::build_send_action(conversation, parts, request_id.to_string())
+    let echo = request_id.to_string();
+    let action = napcat::build_send_action(conversation, parts, echo.clone())
         .map_err(anyhow::Error::msg)?;
-    sender
-        .send(action.to_string())
-        .map_err(|_| anyhow::anyhow!("NapCat writer closed"))?;
-    Ok(())
+    let (response_tx, response_rx) = oneshot::channel();
+    state.qq_pending.insert(
+        echo.clone(),
+        PendingQqAction {
+            account: account.clone(),
+            response: response_tx,
+        },
+    );
+
+    if sender.send(action.to_string()).is_err() {
+        state.qq_pending.remove(&echo);
+        anyhow::bail!("NapCat writer closed");
+    }
+
+    match timeout(QQ_ACTION_TIMEOUT, response_rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(message))) => Err(anyhow::anyhow!(message)),
+        Ok(Err(_)) => Err(anyhow::anyhow!("NapCat action response channel closed")),
+        Err(_) => {
+            state.qq_pending.remove(&echo);
+            anyhow::bail!(
+                "NapCat action response timed out after {}s",
+                QQ_ACTION_TIMEOUT.as_secs()
+            )
+        }
+    }
 }
 
 pub async fn disconnect_provider(state: &CoreState, account: &AccountRef) {
     match account.network {
         Network::Qq => {
             state.qq.remove(account);
+            state.fail_qq_pending(account, "QQ account disconnected before action response");
             if let Some(snapshot) = state
                 .accounts
                 .set_status(account, AccountStatus::Offline, None)

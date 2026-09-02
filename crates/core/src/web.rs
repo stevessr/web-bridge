@@ -167,7 +167,9 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
                 let Message::Text(text) = message else { continue };
                 match serde_json::from_str::<Value>(&text) {
                     Ok(value) => {
-                        if let Some(message) = napcat::event_to_message(&value) {
+                        if let Some((echo, result)) = napcat::action_response(&value) {
+                            resolve_napcat_action(&state, &account, &self_id, echo, result);
+                        } else if let Some(message) = napcat::event_to_message(&value) {
                             let _ = state.events.send(ServerFrame::Message { message });
                         }
                     }
@@ -181,6 +183,7 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
     }
 
     state.qq.remove(&account);
+    state.fail_qq_pending(&account, "NapCat disconnected before action response");
     if let Some(snapshot) = state
         .accounts
         .set_status(&account, AccountStatus::Offline, None)
@@ -190,6 +193,28 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
             .send(ServerFrame::AccountChanged { account: snapshot });
     }
     info!(qq = %self_id, "NapCat disconnected");
+}
+
+fn resolve_napcat_action(
+    state: &CoreState,
+    account: &AccountRef,
+    self_id: &str,
+    echo: String,
+    result: Result<(), String>,
+) {
+    let Some((_, pending)) = state.qq_pending.remove(&echo) else {
+        warn!(qq = %self_id, %echo, "NapCat action response has no pending request");
+        return;
+    };
+
+    if pending.account != *account {
+        let _ = pending.response.send(Err(format!(
+            "NapCat action response account mismatch: expected {}, got {}",
+            pending.account.id, account.id
+        )));
+        return;
+    }
+    let _ = pending.response.send(result);
 }
 
 async fn send_frame<S>(sink: &mut S, frame: &ServerFrame) -> Result<(), ()>

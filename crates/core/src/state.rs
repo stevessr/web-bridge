@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use web_bridge_protocol::{AccountRef, ServerFrame};
 
 use crate::{
@@ -27,6 +27,11 @@ impl Default for CoreConfig {
     }
 }
 
+pub struct PendingQqAction {
+    pub account: AccountRef,
+    pub response: oneshot::Sender<Result<(), String>>,
+}
+
 pub struct CoreState {
     pub role: RuntimeRole,
     pub config: CoreConfig,
@@ -34,6 +39,8 @@ pub struct CoreState {
     pub accounts: AccountRegistry,
     /// QQ account -> reverse OneBot websocket writer.
     pub qq: DashMap<AccountRef, mpsc::UnboundedSender<String>>,
+    /// OneBot echo -> command waiting for the actual NapCat action response.
+    pub qq_pending: DashMap<String, PendingQqAction>,
     /// Matrix account -> independent SDK client and sync task.
     pub matrix: DashMap<AccountRef, Arc<MatrixHandle>>,
     /// Telegram account -> independent MTProto client/session/login state.
@@ -51,6 +58,7 @@ impl CoreState {
             events,
             accounts: AccountRegistry::default(),
             qq: DashMap::new(),
+            qq_pending: DashMap::new(),
             matrix: DashMap::new(),
             telegram: DashMap::new(),
             remote: std::sync::Mutex::new(None),
@@ -62,6 +70,20 @@ impl CoreState {
             .data_dir
             .join(format!("{:?}", account.network).to_lowercase())
             .join(safe_component(&account.id))
+    }
+
+    pub fn fail_qq_pending(&self, account: &AccountRef, reason: &str) {
+        let echoes: Vec<_> = self
+            .qq_pending
+            .iter()
+            .filter(|entry| &entry.value().account == account)
+            .map(|entry| entry.key().clone())
+            .collect();
+        for echo in echoes {
+            if let Some((_, pending)) = self.qq_pending.remove(&echo) {
+                let _ = pending.response.send(Err(reason.to_owned()));
+            }
+        }
     }
 }
 

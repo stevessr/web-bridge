@@ -4,6 +4,31 @@ use web_bridge_protocol::{
     AccountRef, ConversationKind, ConversationRef, MessagePart, Network, UnifiedMessage,
 };
 
+pub fn action_response(value: &Value) -> Option<(String, Result<(), String>)> {
+    let echo = value.get("echo").and_then(value_string_option)?;
+    let status = value.get("status")?.as_str()?;
+    let retcode = value.get("retcode").and_then(Value::as_i64).unwrap_or(-1);
+    if status == "ok" && retcode == 0 {
+        return Some((echo, Ok(())));
+    }
+
+    let detail = value
+        .get("wording")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("NapCat action failed");
+    Some((
+        echo,
+        Err(format!("{detail} (status={status}, retcode={retcode})")),
+    ))
+}
+
 pub fn event_to_message(value: &Value) -> Option<UnifiedMessage> {
     if value.get("post_type")?.as_str()? != "message" {
         return None;
@@ -165,6 +190,58 @@ fn numberish(value: &Value) -> Option<String> {
     }
 }
 
+fn value_string_option(value: &Value) -> Option<String> {
+    numberish(value)
+}
+
 fn value_string(value: &Value) -> String {
     numberish(value).unwrap_or_else(|| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_successful_action_response() {
+        let response = json!({
+            "status": "ok",
+            "retcode": 0,
+            "data": {"message_id": 42},
+            "echo": "request-1"
+        });
+        assert_eq!(
+            action_response(&response),
+            Some(("request-1".into(), Ok(())))
+        );
+    }
+
+    #[test]
+    fn parses_failed_action_response_wording() {
+        let response = json!({
+            "status": "failed",
+            "retcode": 1200,
+            "message": "bad request",
+            "wording": "group not found",
+            "echo": "request-2"
+        });
+        let (echo, result) = action_response(&response).unwrap();
+        assert_eq!(echo, "request-2");
+        assert_eq!(
+            result.unwrap_err(),
+            "group not found (status=failed, retcode=1200)"
+        );
+    }
+
+    #[test]
+    fn message_event_is_not_an_action_response() {
+        assert!(
+            action_response(&json!({
+                "post_type": "message",
+                "self_id": 10001,
+                "message_id": 1
+            }))
+            .is_none()
+        );
+    }
 }

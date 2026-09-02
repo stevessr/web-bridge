@@ -1,20 +1,111 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
-use tokio::task::AbortHandle;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::{net::TcpStream, sync::mpsc, task::AbortHandle, time::sleep};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async,
+    tungstenite::Message,
+};
 use uuid::Uuid;
 use web_bridge_protocol::{
-    AccountRef, AccountSnapshot, ClientFrame, Command, PROTOCOL_VERSION, RouteMode, ServerFrame,
+    AccountRef, AccountSnapshot, ClientFrame, Command, Network, PROTOCOL_VERSION, RouteMode,
+    ServerFrame,
 };
 
 use crate::state::CoreState;
 
+const RECONNECT_INITIAL: Duration = Duration::from_secs(1);
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+
+type RemoteSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(Debug, Clone)]
+struct PendingRemoteRequest {
+    operation: &'static str,
+    account: Option<AccountRef>,
+}
+
+impl PendingRemoteRequest {
+    fn from_command(command: &Command) -> Self {
+        match command {
+            Command::ListAccounts => Self::new("list accounts", None),
+            Command::RegisterAccount { account, .. } => {
+                Self::new("register account", Some(account.clone()))
+            }
+            Command::RemoveAccount { account } => {
+                Self::new("remove account", Some(account.clone()))
+            }
+            Command::SetAccountRoute { account, .. } => {
+                Self::new("change account route", Some(account.clone()))
+            }
+            Command::MatrixLoginPassword { account_id, .. } => Self::new(
+                "Matrix login",
+                Some(AccountRef {
+                    network: Network::Matrix,
+                    id: account_id.clone(),
+                }),
+            ),
+            Command::TelegramBeginLogin { account_id, .. } => Self::new(
+                "Telegram login",
+                Some(AccountRef {
+                    network: Network::Telegram,
+                    id: account_id.clone(),
+                }),
+            ),
+            Command::TelegramSubmitCode { account_id, .. } => Self::new(
+                "Telegram code verification",
+                Some(AccountRef {
+                    network: Network::Telegram,
+                    id: account_id.clone(),
+                }),
+            ),
+            Command::TelegramSubmitPassword { account_id, .. } => Self::new(
+                "Telegram 2FA",
+                Some(AccountRef {
+                    network: Network::Telegram,
+                    id: account_id.clone(),
+                }),
+            ),
+            Command::DisconnectAccount { account } => {
+                Self::new("disconnect account", Some(account.clone()))
+            }
+            Command::SendMessage { account, .. } => {
+                Self::new("send message", Some(account.clone()))
+            }
+        }
+    }
+
+    fn new(operation: &'static str, account: Option<AccountRef>) -> Self {
+        Self { operation, account }
+    }
+
+    fn context(&self) -> String {
+        match &self.account {
+            Some(account) => format!(
+                "{} for {}:{}",
+                self.operation,
+                network_name(account.network),
+                account.id
+            ),
+            None => self.operation.to_owned(),
+        }
+    }
+}
+
 pub struct RemoteBridge {
     outgoing: mpsc::UnboundedSender<ClientFrame>,
     task: AbortHandle,
+    connected: Arc<AtomicBool>,
+    pending: Arc<DashMap<Uuid, PendingRemoteRequest>>,
 }
 
 impl RemoteBridge {
@@ -25,84 +116,216 @@ impl RemoteBridge {
         device_id: String,
     ) -> Result<Self> {
         let endpoint = with_token(endpoint, token);
-        let (socket, _) = connect_async(&endpoint)
+        let (initial_socket, _) = connect_async(&endpoint)
             .await
             .with_context(|| format!("connect web-bridge server at {endpoint}"))?;
-        let (mut sink, mut stream) = socket.split();
-        let (outgoing, mut outbound) = mpsc::unbounded_channel::<ClientFrame>();
+        let (outgoing, outbound) = mpsc::unbounded_channel::<ClientFrame>();
+        let connected = Arc::new(AtomicBool::new(true));
+        let pending = Arc::new(DashMap::new());
 
-        sink.send(Message::Text(
-            serde_json::to_string(&ClientFrame::Hello {
-                protocol: PROTOCOL_VERSION,
-                device_id,
-            })?
-            .into(),
-        ))
-        .await
-        .context("send server hello")?;
-
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    incoming = stream.next() => {
-                        let Some(Ok(message)) = incoming else { break };
-                        let Message::Text(text) = message else { continue };
-                        match serde_json::from_str::<ServerFrame>(&text) {
-                            Ok(frame) => apply_server_frame(&state, frame),
-                            Err(error) => {
-                                let _ = state.events.send(ServerFrame::Error {
-                                    request_id: None,
-                                    code: "remote_invalid_frame".into(),
-                                    message: error.to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(frame) = outbound.recv() => {
-                        let Ok(text) = serde_json::to_string(&frame) else { continue };
-                        if sink.send(Message::Text(text.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            let _ = state.events.send(ServerFrame::Error {
-                request_id: None,
-                code: "remote_disconnected".into(),
-                message: "server connection closed".into(),
-            });
-        });
+        let task_connected = Arc::clone(&connected);
+        let task_pending = Arc::clone(&pending);
+        let task = tokio::spawn(run_remote_manager(
+            state,
+            endpoint,
+            device_id,
+            initial_socket,
+            outbound,
+            task_connected,
+            task_pending,
+        ));
 
         Ok(Self {
             outgoing,
             task: task.abort_handle(),
+            connected,
+            pending,
         })
     }
 
     pub fn command(&self, command: Command) -> Result<Uuid> {
+        if !self.connected.load(Ordering::Acquire) {
+            bail!("server connection is reconnecting");
+        }
+
         let request_id = Uuid::new_v4();
-        self.outgoing
+        self.pending
+            .insert(request_id, PendingRemoteRequest::from_command(&command));
+        if self
+            .outgoing
             .send(ClientFrame::Command {
                 request_id,
                 command,
             })
-            .map_err(|_| anyhow::anyhow!("server connection is closed"))?;
+            .is_err()
+        {
+            self.pending.remove(&request_id);
+            bail!("server connection is closed");
+        }
         Ok(request_id)
     }
 
     pub fn ping(&self, nonce: String) -> Result<()> {
+        if !self.connected.load(Ordering::Acquire) {
+            bail!("server connection is reconnecting");
+        }
         self.outgoing
             .send(ClientFrame::Ping { nonce })
             .map_err(|_| anyhow::anyhow!("server connection is closed"))
     }
 
     pub fn close(&self) {
+        self.connected.store(false, Ordering::Release);
         self.task.abort();
     }
 }
 
-fn apply_server_frame(state: &CoreState, frame: ServerFrame) {
-    match &frame {
+async fn run_remote_manager(
+    state: Arc<CoreState>,
+    endpoint: String,
+    device_id: String,
+    initial_socket: RemoteSocket,
+    mut outbound: mpsc::UnboundedReceiver<ClientFrame>,
+    connected: Arc<AtomicBool>,
+    pending: Arc<DashMap<Uuid, PendingRemoteRequest>>,
+) {
+    let mut socket = Some(initial_socket);
+    let mut reconnect_delay = RECONNECT_INITIAL;
+
+    loop {
+        let current = match socket.take() {
+            Some(socket) => socket,
+            None => {
+                sleep(reconnect_delay).await;
+                match connect_async(&endpoint).await {
+                    Ok((socket, _)) => {
+                        reconnect_delay = RECONNECT_INITIAL;
+                        socket
+                    }
+                    Err(error) => {
+                        connected.store(false, Ordering::Release);
+                        let _ = state.events.send(ServerFrame::Error {
+                            request_id: None,
+                            code: "remote_reconnect_failed".into(),
+                            message: format!(
+                                "server reconnect failed; retrying in {}s: {error}",
+                                next_backoff(reconnect_delay).as_secs()
+                            ),
+                        });
+                        reconnect_delay = next_backoff(reconnect_delay);
+                        continue;
+                    }
+                }
+            }
+        };
+
+        connected.store(true, Ordering::Release);
+        let result = run_connection(
+            &state,
+            current,
+            &device_id,
+            &mut outbound,
+            &pending,
+        )
+        .await;
+
+        connected.store(false, Ordering::Release);
+        fail_pending_requests(&state, &pending, "server connection was interrupted");
+        let message = match result {
+            Ok(()) => "server connection closed; reconnecting automatically".to_owned(),
+            Err(error) => format!("server connection lost; reconnecting automatically: {error:#}"),
+        };
+        let _ = state.events.send(ServerFrame::Error {
+            request_id: None,
+            code: "remote_disconnected".into(),
+            message,
+        });
+        reconnect_delay = RECONNECT_INITIAL;
+    }
+}
+
+async fn run_connection(
+    state: &CoreState,
+    socket: RemoteSocket,
+    device_id: &str,
+    outbound: &mut mpsc::UnboundedReceiver<ClientFrame>,
+    pending: &DashMap<Uuid, PendingRemoteRequest>,
+) -> Result<()> {
+    let (mut sink, mut stream) = socket.split();
+    send_client_frame(
+        &mut sink,
+        &ClientFrame::Hello {
+            protocol: PROTOCOL_VERSION,
+            device_id: device_id.to_owned(),
+        },
+    )
+    .await
+    .context("send server hello")?;
+    send_client_frame(
+        &mut sink,
+        &ClientFrame::Command {
+            request_id: Uuid::new_v4(),
+            command: Command::ListAccounts,
+        },
+    )
+    .await
+    .context("request full account snapshot")?;
+
+    loop {
+        tokio::select! {
+            incoming = stream.next() => {
+                let Some(message) = incoming else {
+                    return Ok(());
+                };
+                let message = message.context("read server websocket")?;
+                let Message::Text(text) = message else { continue };
+                match serde_json::from_str::<ServerFrame>(&text) {
+                    Ok(frame) => apply_server_frame(state, pending, frame),
+                    Err(error) => {
+                        let _ = state.events.send(ServerFrame::Error {
+                            request_id: None,
+                            code: "remote_invalid_frame".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            }
+            frame = outbound.recv() => {
+                let Some(frame) = frame else {
+                    return Ok(());
+                };
+                if let ClientFrame::Command { request_id, .. } = &frame
+                    && !pending.contains_key(request_id)
+                {
+                    // The command was queued immediately before a disconnect and has
+                    // already been failed. Never replay it into a new connection.
+                    continue;
+                }
+                send_client_frame(&mut sink, &frame)
+                    .await
+                    .context("send server websocket frame")?;
+            }
+        }
+    }
+}
+
+async fn send_client_frame<S>(sink: &mut S, frame: &ClientFrame) -> Result<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    let text = serde_json::to_string(frame).context("serialize client frame")?;
+    sink.send(Message::Text(text.into()))
+        .await
+        .context("write client frame")
+}
+
+fn apply_server_frame(
+    state: &CoreState,
+    pending: &DashMap<Uuid, PendingRemoteRequest>,
+    mut frame: ServerFrame,
+) {
+    match &mut frame {
         ServerFrame::Ready { protocol } if *protocol != PROTOCOL_VERSION => {
             let _ = state.events.send(ServerFrame::Error {
                 request_id: None,
@@ -113,12 +336,75 @@ fn apply_server_frame(state: &CoreState, frame: ServerFrame) {
             });
             return;
         }
-        ServerFrame::Accounts { accounts, .. } => reconcile_server_accounts(state, accounts),
+        ServerFrame::Accounts {
+            request_id,
+            accounts,
+        } => {
+            reconcile_server_accounts(state, accounts);
+            if let Some(request_id) = request_id {
+                pending.remove(request_id);
+            }
+        }
         ServerFrame::AccountChanged { account } => mirror_account(state, account),
         ServerFrame::AccountRemoved { account } => remove_server_mirror(state, account),
+        ServerFrame::Ack { request_id } => {
+            pending.remove(request_id);
+        }
+        ServerFrame::Error {
+            request_id: Some(request_id),
+            message,
+            ..
+        } => {
+            if let Some((_, metadata)) = pending.remove(request_id) {
+                *message = format!("{} failed: {message}", metadata.context());
+            }
+        }
+        ServerFrame::AuthChallenge {
+            request_id: Some(request_id),
+            account,
+            ..
+        } => {
+            // A challenge is progress, not completion. Keep the pending entry until
+            // Ack/Error. Validate it when the server sends challenge before Ack.
+            if let Some(metadata) = pending.get(request_id)
+                && let Some(expected) = &metadata.account
+                && expected != account
+            {
+                let _ = state.events.send(ServerFrame::Error {
+                    request_id: Some(request_id.to_owned()),
+                    code: "remote_request_mismatch".into(),
+                    message: format!(
+                        "{} returned an auth challenge for {}:{}",
+                        metadata.context(),
+                        network_name(account.network),
+                        account.id
+                    ),
+                });
+            }
+        }
         _ => {}
     }
     let _ = state.events.send(frame);
+}
+
+fn fail_pending_requests(
+    state: &CoreState,
+    pending: &DashMap<Uuid, PendingRemoteRequest>,
+    reason: &str,
+) {
+    let requests: Vec<_> = pending
+        .iter()
+        .map(|entry| (entry.key().to_owned(), entry.value().clone()))
+        .collect();
+    for (request_id, metadata) in requests {
+        if pending.remove(&request_id).is_some() {
+            let _ = state.events.send(ServerFrame::Error {
+                request_id: Some(request_id),
+                code: "remote_request_interrupted".into(),
+                message: format!("{} failed: {reason}", metadata.context()),
+            });
+        }
+    }
 }
 
 fn reconcile_server_accounts(state: &CoreState, accounts: &[AccountSnapshot]) {
@@ -161,6 +447,14 @@ fn mirror_account(state: &CoreState, snapshot: &AccountSnapshot) {
     if snapshot.route != RouteMode::Server {
         return;
     }
+    if state
+        .accounts
+        .get(&snapshot.account)
+        .is_some_and(|current| current.route == RouteMode::Client)
+    {
+        // A late remote event must never take ownership back from a client route.
+        return;
+    }
     let Ok(_) = state.accounts.upsert(
         snapshot.account.clone(),
         snapshot.display_name.clone(),
@@ -175,6 +469,10 @@ fn mirror_account(state: &CoreState, snapshot: &AccountSnapshot) {
     );
 }
 
+fn next_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(RECONNECT_MAX)
+}
+
 fn with_token(endpoint: &str, token: &str) -> String {
     if token.is_empty() {
         endpoint.to_owned()
@@ -182,6 +480,14 @@ fn with_token(endpoint: &str, token: &str) -> String {
         format!("{endpoint}&token={token}")
     } else {
         format!("{endpoint}?token={token}")
+    }
+}
+
+fn network_name(network: Network) -> &'static str {
+    match network {
+        Network::Qq => "qq",
+        Network::Matrix => "matrix",
+        Network::Telegram => "telegram",
     }
 }
 
@@ -196,7 +502,7 @@ pub fn ensure_client_role(state: &CoreState) -> Result<()> {
 mod tests {
     use super::*;
     use crate::{accounts::RuntimeRole, state::CoreConfig};
-    use web_bridge_protocol::{AccountStatus, Network};
+    use web_bridge_protocol::AccountStatus;
 
     fn client_state() -> CoreState {
         CoreState::new(RuntimeRole::Client, CoreConfig::default())
@@ -235,6 +541,7 @@ mod tests {
 
         apply_server_frame(
             &state,
+            &DashMap::new(),
             ServerFrame::Accounts {
                 request_id: None,
                 accounts: vec![snapshot(Network::Matrix, "keep", RouteMode::Server)],
@@ -259,6 +566,7 @@ mod tests {
 
         apply_server_frame(
             &state,
+            &DashMap::new(),
             ServerFrame::Accounts {
                 request_id: None,
                 accounts: Vec::new(),
@@ -286,6 +594,7 @@ mod tests {
 
         apply_server_frame(
             &state,
+            &DashMap::new(),
             ServerFrame::AccountRemoved {
                 account: switched.clone(),
             },
@@ -295,6 +604,28 @@ mod tests {
             state.accounts.get(&switched).map(|item| item.route),
             Some(RouteMode::Client)
         );
+    }
+
+    #[test]
+    fn late_account_changed_does_not_take_client_ownership() {
+        let state = client_state();
+        let switched = account(Network::Telegram, "switched");
+        state
+            .accounts
+            .upsert(switched.clone(), Some("local".into()), RouteMode::Client)
+            .unwrap();
+
+        apply_server_frame(
+            &state,
+            &DashMap::new(),
+            ServerFrame::AccountChanged {
+                account: snapshot(Network::Telegram, "switched", RouteMode::Server),
+            },
+        );
+
+        let current = state.accounts.get(&switched).unwrap();
+        assert_eq!(current.route, RouteMode::Client);
+        assert_eq!(current.display_name.as_deref(), Some("local"));
     }
 
     #[test]
@@ -309,6 +640,7 @@ mod tests {
 
         apply_server_frame(
             &state,
+            &DashMap::new(),
             ServerFrame::Accounts {
                 request_id: None,
                 accounts: vec![snapshot(Network::Qq, "10002", RouteMode::Server)],
@@ -319,5 +651,31 @@ mod tests {
         let current_snapshot = state.accounts.get(&current).unwrap();
         assert_eq!(current_snapshot.route, RouteMode::Server);
         assert_eq!(current_snapshot.status, AccountStatus::Online);
+    }
+
+    #[test]
+    fn reconnect_backoff_caps_at_thirty_seconds() {
+        let mut delay = RECONNECT_INITIAL;
+        let mut values = Vec::new();
+        for _ in 0..6 {
+            values.push(delay.as_secs());
+            delay = next_backoff(delay);
+        }
+        assert_eq!(values, vec![1, 2, 4, 8, 16, 30]);
+        assert_eq!(next_backoff(delay), RECONNECT_MAX);
+    }
+
+    #[test]
+    fn pending_metadata_never_contains_login_secrets() {
+        let metadata = PendingRemoteRequest::from_command(&Command::MatrixLoginPassword {
+            account_id: "matrix-a".into(),
+            route: RouteMode::Server,
+            homeserver: "https://matrix.example".into(),
+            username: "alice".into(),
+            password: "do-not-log-this".into(),
+        });
+        let context = metadata.context();
+        assert_eq!(context, "Matrix login for matrix:matrix-a");
+        assert!(!context.contains("do-not-log-this"));
     }
 }
