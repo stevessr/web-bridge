@@ -36,6 +36,26 @@
         <span class="button-icon" aria-hidden="true">↻</span>
         <span class="button-label">重新同步</span>
       </button>
+      <div id="window-size-control" class="window-size-control">
+        <button id="window-size" class="toolbar-button compact" type="button" title="调整远端 QQ 原生窗口大小" aria-expanded="false" aria-controls="window-size-popover">
+          <span id="window-size-label">窗口</span>
+        </button>
+        <div id="window-size-popover" class="window-size-popover" hidden>
+          <div class="window-size-heading">远端 QQ 窗口</div>
+          <div class="window-size-fields">
+            <label>宽<input id="window-width" type="number" min="320" max="7680" step="16" inputmode="numeric" aria-label="窗口宽度"></label>
+            <span aria-hidden="true">×</span>
+            <label>高<input id="window-height" type="number" min="240" max="4320" step="16" inputmode="numeric" aria-label="窗口高度"></label>
+          </div>
+          <div class="window-size-presets" aria-label="常用窗口大小">
+            <button type="button" data-window-size="800x600">800×600</button>
+            <button type="button" data-window-size="1024x768">1024×768</button>
+            <button type="button" data-window-size="1280x800">1280×800</button>
+            <button type="button" data-window-size="1440x900">1440×900</button>
+          </div>
+          <button id="window-size-apply" class="toolbar-button primary" type="button">应用到 QQ</button>
+        </div>
+      </div>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <button id="zoom-out" class="toolbar-button icon-only" type="button" title="缩小" aria-label="缩小">−</button>
       <button id="fit-view" class="toolbar-button compact active" type="button" title="自动适应窗口" aria-pressed="true">

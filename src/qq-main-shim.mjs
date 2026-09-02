@@ -342,6 +342,62 @@ function startElectronBridge() {
       return { mode: 'native' };
     }
 
+    function ownerWindow() {
+      if (!target || target.isDestroyed()) throw new Error('no renderer target attached');
+      const owner = target.getOwnerBrowserWindow?.();
+      if (!owner || owner.isDestroyed?.()) throw new Error('renderer target has no BrowserWindow owner');
+      return owner;
+    }
+
+    function ownerWindowState(owner) {
+      try { if (owner.isFullScreen?.()) return 'fullscreen'; } catch {}
+      try { if (owner.isMaximized?.()) return 'maximized'; } catch {}
+      try { if (owner.isMinimized?.()) return 'minimized'; } catch {}
+      return 'normal';
+    }
+
+    function ownerBounds(owner) {
+      const bounds = owner.getBounds();
+      return { left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height, windowState: ownerWindowState(owner) };
+    }
+
+    async function getWindowForTarget() {
+      const owner = ownerWindow();
+      return { windowId: Number(owner.id), bounds: ownerBounds(owner) };
+    }
+
+    async function setWindowBounds(params) {
+      const owner = ownerWindow();
+      const expectedWindowId = Number(params?.windowId);
+      if (Number.isFinite(expectedWindowId) && expectedWindowId !== Number(owner.id)) throw new Error('windowId does not match attached BrowserWindow');
+      const requested = params?.bounds && typeof params.bounds === 'object' ? params.bounds : {};
+      const requestedState = String(requested.windowState || '');
+      if (requestedState === 'normal') {
+        try { if (owner.isFullScreen?.()) owner.setFullScreen(false); } catch {}
+        try { if (owner.isMaximized?.()) owner.unmaximize(); } catch {}
+        try { if (owner.isMinimized?.()) owner.restore(); } catch {}
+      } else if (requestedState === 'maximized') {
+        owner.maximize();
+      } else if (requestedState === 'minimized') {
+        owner.minimize();
+      } else if (requestedState === 'fullscreen') {
+        owner.setFullScreen(true);
+      }
+      const current = owner.getBounds();
+      const next = { ...current };
+      let hasBounds = false;
+      const width = Number(requested.width);
+      const height = Number(requested.height);
+      const left = Number(requested.left);
+      const top = Number(requested.top);
+      if (Number.isFinite(width)) { next.width = Math.max(320, Math.min(7680, Math.round(width))); hasBounds = true; }
+      if (Number.isFinite(height)) { next.height = Math.max(240, Math.min(4320, Math.round(height))); hasBounds = true; }
+      if (Number.isFinite(left)) { next.x = Math.round(left); hasBounds = true; }
+      if (Number.isFinite(top)) { next.y = Math.round(top); hasBounds = true; }
+      if (hasBounds) owner.setBounds(next, false);
+      return {};
+    }
+
     async function command(method, params) {
       if (!target || target.isDestroyed()) throw new Error('no renderer target attached');
       if (method === 'Runtime.enable' || method === 'Page.enable' || method === 'DOM.enable') return {};
@@ -359,6 +415,8 @@ function startElectronBridge() {
         return { identifier: 'web-bridge-script-' + scripts.length };
       }
       if (method === 'Runtime.evaluate') return evaluate(params || {});
+      if (method === 'Browser.getWindowForTarget') return getWindowForTarget();
+      if (method === 'Browser.setWindowBounds') return setWindowBounds(params || {});
       if (method === 'Input.dispatchMouseEvent') return dispatchMouse(params || {});
       if (method === 'Input.dispatchKeyEvent') return dispatchKey(params || {});
       if (method === 'Input.insertText') return insertText(params || {});

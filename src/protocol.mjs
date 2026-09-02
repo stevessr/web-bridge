@@ -66,6 +66,12 @@ export function parseClientMessage(raw, { maxTextBytes = 64 * 1024 } = {}) {
       return scoped(message, { type: 'takeControl' });
     case 'releaseControl':
       return scoped(message, { type: 'releaseControl' });
+    case 'resizeWindow': {
+      const width = Math.trunc(number(message.width, 0));
+      const height = Math.trunc(number(message.height, 0));
+      if (width < 320 || width > 7680 || height < 240 || height > 4320) return null;
+      return scoped(message, { type: 'resizeWindow', width, height });
+    }
     case 'fileCommit': {
       const id = nodeId(message.nodeId);
       const tokens = Array.isArray(message.uploadTokens) ? message.uploadTokens.filter((token) => /^[A-Za-z0-9_-]{16,128}$/.test(String(token))).slice(0, 32).map(String) : [];

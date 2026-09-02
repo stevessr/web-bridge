@@ -64,6 +64,102 @@
   });
   document.body.append(inputProxy);
 
+  const windowSizeButton = document.querySelector('#window-size');
+  const windowSizePopover = document.querySelector('#window-size-popover');
+  const windowWidthInput = document.querySelector('#window-width');
+  const windowHeightInput = document.querySelector('#window-height');
+  const windowSizeApply = document.querySelector('#window-size-apply');
+  const windowSizeLabel = document.querySelector('#window-size-label');
+
+  function stageSize() {
+    const width = Math.round(Number.parseFloat(stage.style.width) || stage.clientWidth || 0);
+    const height = Math.round(Number.parseFloat(stage.style.height) || stage.clientHeight || 0);
+    return { width, height };
+  }
+
+  function clampWindowSize(width, height) {
+    return {
+      width: Math.max(320, Math.min(7680, Math.round(Number(width) || 0))),
+      height: Math.max(240, Math.min(4320, Math.round(Number(height) || 0)))
+    };
+  }
+
+  function fillWindowSize(size = stageSize()) {
+    if (windowWidthInput && size.width) windowWidthInput.value = String(size.width);
+    if (windowHeightInput && size.height) windowHeightInput.value = String(size.height);
+    if (windowSizeLabel && size.width && size.height) windowSizeLabel.textContent = `${size.width}×${size.height}`;
+  }
+
+  function closeWindowSize() {
+    if (!windowSizePopover || !windowSizeButton) return;
+    windowSizePopover.hidden = true;
+    windowSizeButton.setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleWindowSize() {
+    if (!windowSizePopover || !windowSizeButton || !hasControl()) return;
+    const opening = windowSizePopover.hidden;
+    if (opening) fillWindowSize();
+    windowSizePopover.hidden = !opening;
+    windowSizeButton.setAttribute('aria-expanded', String(opening));
+    if (opening) windowWidthInput?.focus({ preventScroll: true });
+  }
+
+  function applyWindowSize() {
+    if (!hasControl()) return;
+    const size = clampWindowSize(windowWidthInput?.value, windowHeightInput?.value);
+    if (windowWidthInput) windowWidthInput.value = String(size.width);
+    if (windowHeightInput) windowHeightInput.value = String(size.height);
+    if (send({ type: 'resizeWindow', width: size.width, height: size.height })) {
+      if (windowSizeLabel) windowSizeLabel.textContent = `${size.width}×${size.height}`;
+      closeWindowSize();
+    }
+  }
+
+  windowSizeButton?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleWindowSize();
+  });
+  windowSizeApply?.addEventListener('click', applyWindowSize);
+  windowSizePopover?.querySelectorAll('[data-window-size]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const match = String(button.dataset.windowSize || '').match(/^(\d+)x(\d+)$/);
+      if (!match) return;
+      if (windowWidthInput) windowWidthInput.value = match[1];
+      if (windowHeightInput) windowHeightInput.value = match[2];
+      applyWindowSize();
+    });
+  });
+  for (const input of [windowWidthInput, windowHeightInput]) {
+    input?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); applyWindowSize(); }
+      if (event.key === 'Escape') { event.preventDefault(); closeWindowSize(); windowSizeButton?.focus(); }
+    });
+  }
+  document.addEventListener('pointerdown', (event) => {
+    if (windowSizePopover?.hidden) return;
+    if (windowSizePopover?.contains(event.target) || windowSizeButton?.contains(event.target)) return;
+    closeWindowSize();
+  }, true);
+
+  const localWindowSizeEvent = (event) => Boolean(windowSizePopover && eventPath(event).includes(windowSizePopover));
+  for (const type of ['keydown', 'beforeinput', 'compositionstart', 'compositionend', 'paste']) {
+    window.addEventListener(type, (event) => {
+      if (localWindowSizeEvent(event)) event.stopImmediatePropagation();
+    }, true);
+  }
+
+  const updateWindowSizeControl = () => {
+    if (windowSizeButton) windowSizeButton.disabled = !hasControl();
+    if (!hasControl()) closeWindowSize();
+  };
+  new MutationObserver(updateWindowSizeControl).observe(document.body, { attributes: true, attributeFilter: ['data-control'] });
+  new MutationObserver(() => {
+    if (windowSizePopover?.hidden) fillWindowSize();
+  }).observe(stage, { attributes: true, attributeFilter: ['style'] });
+  updateWindowSizeControl();
+
   function hasControl() {
     return document.body.dataset.control === 'granted';
   }
