@@ -19,7 +19,11 @@ use web_bridge_protocol::{
     ServerFrame,
 };
 
-use crate::{napcat, state::CoreState};
+use crate::{
+    napcat,
+    providers::{matrix, telegram},
+    state::CoreState,
+};
 
 pub fn router(state: Arc<CoreState>) -> Router {
     Router::new()
@@ -59,7 +63,7 @@ async fn napcat_upgrade(
     if !bearer_matches(&headers, &state.config.napcat_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let self_id = match headers.get("x-self-id").and_then(|v| v.to_str().ok()) {
+    let self_id = match headers.get("x-self-id").and_then(|value| value.to_str().ok()) {
         Some(value) if !value.is_empty() => value.to_owned(),
         _ => return (StatusCode::BAD_REQUEST, "missing X-Self-ID").into_response(),
     };
@@ -95,11 +99,11 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
                             }
                         }
                     }
-                    Err(err) => {
+                    Err(error) => {
                         let frame = ServerFrame::Error {
                             request_id: None,
                             code: "invalid_frame".into(),
-                            message: err.to_string(),
+                            message: error.to_string(),
                         };
                         if send_frame(&mut sink, &frame).await.is_err() {
                             return;
@@ -163,9 +167,12 @@ async fn handle_command(
             }
         }
         Command::RemoveAccount { account } => {
+            disconnect_provider(state, &account).await;
             state.qq.remove(&account);
             if state.accounts.remove(&account).is_some() {
-                let _ = state.events.send(ServerFrame::AccountRemoved { account });
+                let _ = state
+                    .events
+                    .send(ServerFrame::AccountRemoved { account });
                 vec![ServerFrame::Ack { request_id }]
             } else {
                 vec![ServerFrame::Error {
@@ -187,6 +194,97 @@ async fn handle_command(
                 Err(message) => vec![policy_error(request_id, message)],
             }
         }
+        Command::MatrixLoginPassword {
+            account_id,
+            route,
+            homeserver,
+            username,
+            password,
+        } => match matrix::login_password(
+            Arc::clone(state),
+            account_id,
+            route,
+            homeserver,
+            username,
+            password,
+        )
+        .await
+        {
+            Ok(_) => vec![ServerFrame::Ack { request_id }],
+            Err(error) => vec![provider_error(request_id, "matrix_login_failed", error)],
+        },
+        Command::TelegramBeginLogin {
+            account_id,
+            route,
+            api_id,
+            api_hash,
+            phone,
+        } => match telegram::begin_login(
+            Arc::clone(state),
+            account_id.clone(),
+            route,
+            api_id,
+            api_hash,
+            phone,
+        )
+        .await
+        {
+            Ok((_, challenge)) => {
+                let account = AccountRef {
+                    network: Network::Telegram,
+                    id: account_id,
+                };
+                let mut frames = vec![ServerFrame::Ack { request_id }];
+                if let Some(challenge) = challenge {
+                    frames.push(ServerFrame::AuthChallenge {
+                        request_id: Some(request_id),
+                        account,
+                        challenge,
+                    });
+                }
+                frames
+            }
+            Err(error) => vec![provider_error(request_id, "telegram_login_failed", error)],
+        },
+        Command::TelegramSubmitCode { account_id, code } => {
+            let account = AccountRef {
+                network: Network::Telegram,
+                id: account_id,
+            };
+            match telegram::submit_code(Arc::clone(state), &account, code).await {
+                Ok((_, challenge)) => {
+                    let mut frames = vec![ServerFrame::Ack { request_id }];
+                    if let Some(challenge) = challenge {
+                        frames.push(ServerFrame::AuthChallenge {
+                            request_id: Some(request_id),
+                            account,
+                            challenge,
+                        });
+                    }
+                    frames
+                }
+                Err(error) => vec![provider_error(request_id, "telegram_code_failed", error)],
+            }
+        }
+        Command::TelegramSubmitPassword {
+            account_id,
+            password,
+        } => {
+            let account = AccountRef {
+                network: Network::Telegram,
+                id: account_id,
+            };
+            match telegram::submit_password(Arc::clone(state), &account, password).await {
+                Ok(_) => vec![ServerFrame::Ack { request_id }],
+                Err(error) => {
+                    vec![provider_error(request_id, "telegram_password_failed", error)]
+                }
+            }
+        }
+        Command::DisconnectAccount { account } => {
+            disconnect_provider(state, &account).await;
+            vec![ServerFrame::Ack { request_id }]
+        }
         Command::SendMessage {
             account,
             route,
@@ -202,37 +300,58 @@ async fn handle_command(
             if !state.role.route_is_local(route) {
                 return vec![route_not_local(request_id)];
             }
-            if account.network != Network::Qq {
-                return vec![ServerFrame::Error {
-                    request_id: Some(request_id),
-                    code: "provider_not_ready".into(),
-                    message: "Matrix and Telegram shared-core providers are not connected yet"
-                        .into(),
-                }];
-            }
-            let Some(sender) = state.qq.get(&account) else {
-                return vec![ServerFrame::Error {
-                    request_id: Some(request_id),
-                    code: "qq_offline".into(),
-                    message: format!("QQ account {} has no NapCat connection", account.id),
-                }];
-            };
-            match napcat::build_send_action(&conversation, &parts, request_id.to_string()) {
-                Ok(action) if sender.send(action.to_string()).is_ok() => {
-                    vec![ServerFrame::Ack { request_id }]
+
+            let result = match account.network {
+                Network::Qq => send_qq(state, &account, &conversation, &parts, request_id).await,
+                Network::Matrix => matrix::send_message(state, &account, &conversation, &parts).await,
+                Network::Telegram => {
+                    telegram::send_message(state, &account, &conversation, &parts).await
                 }
-                Ok(_) => vec![ServerFrame::Error {
-                    request_id: Some(request_id),
-                    code: "qq_disconnected".into(),
-                    message: "NapCat writer closed".into(),
-                }],
-                Err(message) => vec![ServerFrame::Error {
-                    request_id: Some(request_id),
-                    code: "unsupported_message".into(),
-                    message: message.into(),
-                }],
+            };
+
+            match result {
+                Ok(()) => vec![ServerFrame::Ack { request_id }],
+                Err(error) => vec![provider_error(request_id, "send_failed", error)],
             }
         }
+    }
+}
+
+async fn send_qq(
+    state: &CoreState,
+    account: &AccountRef,
+    conversation: &web_bridge_protocol::ConversationRef,
+    parts: &[web_bridge_protocol::MessagePart],
+    request_id: uuid::Uuid,
+) -> anyhow::Result<()> {
+    let sender = state
+        .qq
+        .get(account)
+        .ok_or_else(|| anyhow::anyhow!("QQ account {} has no NapCat connection", account.id))?;
+    let action = napcat::build_send_action(conversation, parts, request_id.to_string())
+        .map_err(anyhow::Error::msg)?;
+    sender
+        .send(action.to_string())
+        .map_err(|_| anyhow::anyhow!("NapCat writer closed"))?;
+    Ok(())
+}
+
+async fn disconnect_provider(state: &CoreState, account: &AccountRef) {
+    match account.network {
+        Network::Qq => {
+            state.qq.remove(account);
+            if let Some(snapshot) =
+                state
+                    .accounts
+                    .set_status(account, AccountStatus::Offline, None)
+            {
+                let _ = state
+                    .events
+                    .send(ServerFrame::AccountChanged { account: snapshot });
+            }
+        }
+        Network::Matrix => matrix::disconnect(state, account),
+        Network::Telegram => telegram::disconnect(state, account).await,
     }
 }
 
@@ -269,7 +388,7 @@ async fn napcat_socket(socket: WebSocket, state: Arc<CoreState>, self_id: String
                             let _ = state.events.send(ServerFrame::Message { message });
                         }
                     }
-                    Err(err) => warn!(qq = %self_id, %err, "invalid OneBot JSON"),
+                    Err(error) => warn!(qq = %self_id, %error, "invalid OneBot JSON"),
                 }
             }
             Some(outgoing) = rx.recv() => {
@@ -314,13 +433,21 @@ fn policy_error(request_id: uuid::Uuid, message: &str) -> ServerFrame {
     }
 }
 
+fn provider_error(request_id: uuid::Uuid, code: &str, error: anyhow::Error) -> ServerFrame {
+    ServerFrame::Error {
+        request_id: Some(request_id),
+        code: code.into(),
+        message: format!("{error:#}"),
+    }
+}
+
 fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
     if expected.is_empty() {
         return true;
     }
     headers
         .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|token| token == expected)
 }

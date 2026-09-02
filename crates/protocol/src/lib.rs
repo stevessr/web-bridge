@@ -106,6 +106,13 @@ pub struct UnifiedMessage {
     pub raw: Option<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuthChallenge {
+    TelegramCode,
+    TelegramPassword { hint: Option<String> },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
@@ -130,6 +137,31 @@ pub enum Command {
         account: AccountRef,
         route: RouteMode,
     },
+    MatrixLoginPassword {
+        account_id: String,
+        route: RouteMode,
+        homeserver: String,
+        username: String,
+        password: String,
+    },
+    TelegramBeginLogin {
+        account_id: String,
+        route: RouteMode,
+        api_id: i32,
+        api_hash: String,
+        phone: String,
+    },
+    TelegramSubmitCode {
+        account_id: String,
+        code: String,
+    },
+    TelegramSubmitPassword {
+        account_id: String,
+        password: String,
+    },
+    DisconnectAccount {
+        account: AccountRef,
+    },
     SendMessage {
         account: AccountRef,
         route: RouteMode,
@@ -153,6 +185,11 @@ pub enum ServerFrame {
     },
     AccountRemoved {
         account: AccountRef,
+    },
+    AuthChallenge {
+        request_id: Option<Uuid>,
+        account: AccountRef,
+        challenge: AuthChallenge,
     },
     Message {
         message: UnifiedMessage,

@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
@@ -24,6 +24,9 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "dev-client-token".into()),
             napcat_token: env::var("WEB_BRIDGE_NAPCAT_TOKEN")
                 .unwrap_or_else(|_| "dev-napcat-token".into()),
+            data_dir: PathBuf::from(
+                env::var("WEB_BRIDGE_DATA_DIR").unwrap_or_else(|_| "data".into()),
+            ),
         },
     );
 

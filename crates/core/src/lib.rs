@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod napcat;
+pub mod providers;
 pub mod state;
 pub mod web;
 
