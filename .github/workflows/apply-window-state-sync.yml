@@ -6,6 +6,7 @@ permissions:
   contents: write
 jobs:
   apply:
+    if: github.event.head_commit.message != 'feat: synchronize remote QQ window state'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -37,7 +38,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm .github/workflows/apply-window-state-sync.yml scripts/.apply-window-state-sync.mjs
           git add src/protocol.mjs src/host-multi.mjs public/index.html public/screens.css public/input-fastpath.js test/window-state-sync.test.mjs
           git commit -m 'feat: synchronize remote QQ window state'
           git push
