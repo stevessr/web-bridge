@@ -1,5 +1,5 @@
 use chrono::{TimeZone, Utc};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use web_bridge_protocol::{
     AccountRef, ConversationKind, ConversationRef, MessagePart, Network, UnifiedMessage,
 };
@@ -15,10 +15,7 @@ pub fn event_to_message(value: &Value) -> Option<UnifiedMessage> {
     let message_type = value.get("message_type")?.as_str()?;
     let (kind, conversation_id) = match message_type {
         "private" => (ConversationKind::Private, sender_id.clone()),
-        "group" => (
-            ConversationKind::Group,
-            numberish(value.get("group_id")?)?,
-        ),
+        "group" => (ConversationKind::Group, numberish(value.get("group_id")?)?),
         _ => return None,
     };
 
@@ -69,7 +66,10 @@ pub fn build_send_action(
     };
 
     let mut params = Map::new();
-    params.insert(target_key.to_owned(), Value::String(conversation.id.clone()));
+    params.insert(
+        target_key.to_owned(),
+        Value::String(conversation.id.clone()),
+    );
     params.insert("message".to_owned(), Value::Array(message));
 
     Ok(json!({
