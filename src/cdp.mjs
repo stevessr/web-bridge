@@ -1,10 +1,29 @@
 import WebSocket from 'ws';
 
+function describeFetchError(error) {
+  const cause = error?.cause;
+  if (!cause) return error?.message || String(error);
+  const parts = [];
+  if (cause.code) parts.push(cause.code);
+  if (cause.message) parts.push(cause.message);
+  return parts.length ? `${error?.message || 'fetch failed'} (${parts.join(': ')})` : (error?.message || String(error));
+}
+
 export async function listTargets(host = '127.0.0.1', port = 9222, timeoutMs = 3000) {
+  const endpoint = `http://${host}:${port}/json/list`;
   const signal = AbortSignal.timeout(timeoutMs);
-  const response = await fetch(`http://${host}:${port}/json/list`, { signal });
-  if (!response.ok) throw new Error(`CDP target discovery failed: ${response.status}`);
-  return response.json();
+  let response;
+  try {
+    response = await fetch(endpoint, { signal });
+  } catch (error) {
+    throw new Error(`CDP target discovery failed at ${endpoint}: ${describeFetchError(error)}`, { cause: error });
+  }
+  if (!response.ok) throw new Error(`CDP target discovery failed at ${endpoint}: HTTP ${response.status}`);
+  try {
+    return await response.json();
+  } catch (error) {
+    throw new Error(`CDP target discovery returned invalid JSON at ${endpoint}: ${error.message}`, { cause: error });
+  }
 }
 
 export class CdpConnection {
