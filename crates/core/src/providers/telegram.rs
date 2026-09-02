@@ -161,11 +161,11 @@ pub async fn restore_account(
         return state
             .accounts
             .set_status(account, AccountStatus::Offline, None)
-            .context("Telegram account disappeared after unauthorised restore");
+            .context("Telegram account disappeared after unauthorized restore");
     }
 
     *telegram.login.lock().await = LoginStage::Authorized;
-    if let Some((_, old)) = state.telegram.insert(account.clone(), telegram.clone()) {
+    if let Some(old) = state.telegram.insert(account.clone(), telegram.clone()) {
         stop_handle(&old).await;
     }
     finish_authorized(state, account.clone(), telegram).await
