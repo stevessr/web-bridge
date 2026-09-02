@@ -1,9 +1,7 @@
 use std::{path::Path, sync::Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use web_bridge_protocol::{
-    AccountRef, ConversationKind, ConversationRef, MessagePart, Network, UnifiedMessage,
-};
+use web_bridge_protocol::{AccountRef, ConversationKind, Network, UnifiedMessage};
 
 pub struct MessageStore {
     db: Mutex<Connection>,
@@ -138,12 +136,7 @@ impl MessageStore {
         transaction.commit()
     }
 
-    pub fn set_cursor(
-        &self,
-        account: &AccountRef,
-        key: &str,
-        value: &str,
-    ) -> rusqlite::Result<()> {
+    pub fn set_cursor(&self, account: &AccountRef, key: &str, value: &str) -> rusqlite::Result<()> {
         let connection = self.db.lock().map_err(|_| lock_error())?;
         connection.execute(
             "INSERT INTO account_cursors (network, account_id, cursor_key, cursor_value)
@@ -197,7 +190,7 @@ fn json_error(error: serde_json::Error) -> rusqlite::Error {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use web_bridge_protocol::MessagePart;
+    use web_bridge_protocol::{ConversationRef, MessagePart};
 
     #[test]
     fn stores_messages_and_account_cursors() {
