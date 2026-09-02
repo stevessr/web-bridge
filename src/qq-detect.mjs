@@ -10,13 +10,13 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_NAMES = ['qq', 'linuxqq', 'QQ'];
 const FIXED_CANDIDATES = [
-  '/opt/QQ/qq',
-  '/opt/qq/qq',
-  '/usr/bin/linuxqq',
-  '/usr/bin/qq',
-  '/usr/local/bin/linuxqq',
-  '/usr/local/bin/qq',
-  '/snap/bin/qq'
+  { path: '/opt/QQ/qq', source: 'well-known-direct-host', priority: 5 },
+  { path: '/opt/qq/qq', source: 'well-known-direct-host', priority: 5 },
+  { path: '/usr/bin/linuxqq', source: 'well-known-launcher', priority: 25 },
+  { path: '/usr/bin/qq', source: 'well-known-launcher', priority: 25 },
+  { path: '/usr/local/bin/linuxqq', source: 'well-known-launcher', priority: 30 },
+  { path: '/usr/local/bin/qq', source: 'well-known-launcher', priority: 30 },
+  { path: '/snap/bin/qq', source: 'well-known-launcher', priority: 35 }
 ];
 
 export function tokenizeDesktopExec(value) {
@@ -71,6 +71,17 @@ export function extractExecutableFromDesktopExec(execLine) {
   return tokens[index] || null;
 }
 
+export function qqCandidatePriority(path, source = '') {
+  const normalized = String(path || '');
+  if (/^\/opt\/(?:QQ|qq)\/qq$/.test(normalized)) return 5;
+  if (String(source).startsWith('running-process:')) return 10;
+  if (String(source).startsWith('PATH:')) return 20;
+  if (String(source).startsWith('desktop:')) return 30;
+  if (String(source).startsWith('package:')) return 40;
+  if (String(source).startsWith('user-app:')) return 50;
+  return 60;
+}
+
 async function isExecutable(path) {
   if (!path) return false;
   try {
@@ -110,13 +121,13 @@ async function addCandidate(results, seen, path, source, priority, env = process
   const normalized = await canonical(resolved);
   if (seen.has(normalized)) return;
   seen.add(normalized);
-  results.push({ path: normalized, source, priority });
+  results.push({ path: normalized, source, priority: priority ?? qqCandidatePriority(normalized, source) });
 }
 
 async function discoverFromPath(results, seen, env) {
   for (const name of DEFAULT_NAMES) {
     const command = await resolveCommand(name, env);
-    if (command) await addCandidate(results, seen, command, `PATH:${name}`, 20, env);
+    if (command) await addCandidate(results, seen, command, `PATH:${name}`, undefined, env);
   }
 }
 
@@ -139,7 +150,7 @@ async function discoverDesktopEntries(results, seen, env) {
       if (!preferred.includes(name) && !/(^|\n)(Name|GenericName)=.*\bQQ\b/i.test(content)) continue;
       const exec = content.match(/^Exec=(.+)$/m)?.[1];
       const executable = extractExecutableFromDesktopExec(exec);
-      if (executable) await addCandidate(results, seen, executable, `desktop:${join(dir, name)}`, 30, env);
+      if (executable) await addCandidate(results, seen, executable, `desktop:${join(dir, name)}`, undefined, env);
     }
   }
 }
@@ -162,7 +173,7 @@ async function discoverRunningProcesses(results, seen, env) {
     }
     const name = basename(exe).toLowerCase();
     if (name === 'qq' || name === 'linuxqq' || /\/QQ\/qq(?:\s|$)/.test(cmdline)) {
-      await addCandidate(results, seen, exe, `running-process:${entry}`, 10, env);
+      await addCandidate(results, seen, exe, `running-process:${entry}`, undefined, env);
     }
   }
 }
@@ -176,7 +187,7 @@ async function discoverUserApplications(results, seen, env) {
     for (const entry of entries) {
       if (!entry.isFile() && !entry.isSymbolicLink()) continue;
       if (!/(?:^|[-_.])(qq|linuxqq)(?:[-_.]|$)/i.test(entry.name) && !/QQ.*\.AppImage$/i.test(entry.name)) continue;
-      await addCandidate(results, seen, join(dir, entry.name), `user-app:${dir}`, 50, env);
+      await addCandidate(results, seen, join(dir, entry.name), `user-app:${dir}`, undefined, env);
     }
   }
 }
@@ -197,7 +208,7 @@ async function discoverPackageManager(results, seen, env) {
       const { stdout } = await execFileAsync(command, args, { timeout: 1200, maxBuffer: 512 * 1024, env });
       const lines = stdout.split(/\r?\n/).filter(Boolean);
       const likely = lines.filter((line) => /(?:\/QQ\/qq|\/linuxqq|\/qq)$/i.test(line));
-      for (const line of likely) await addCandidate(results, seen, line, `package:${command} ${args.join(' ')}`, 40, env);
+      for (const line of likely) await addCandidate(results, seen, line, `package:${command} ${args.join(' ')}`, undefined, env);
     } catch {
       // Package is absent or package manager returned non-zero.
     }
@@ -221,7 +232,9 @@ export async function detectQQBinary({ env = process.env, all = false } = {}) {
 
   await discoverRunningProcesses(results, seen, env);
   await discoverFromPath(results, seen, env);
-  for (const candidate of FIXED_CANDIDATES) await addCandidate(results, seen, candidate, 'well-known-path', 25, env);
+  for (const candidate of FIXED_CANDIDATES) {
+    await addCandidate(results, seen, candidate.path, candidate.source, candidate.priority, env);
+  }
   await discoverDesktopEntries(results, seen, env);
   await discoverPackageManager(results, seen, env);
   await discoverUserApplications(results, seen, env);
@@ -276,6 +289,7 @@ async function main() {
   for (const [index, candidate] of list.entries()) {
     console.log(`${index === 0 ? '*' : '-'} ${candidate.path}`);
     console.log(`  source: ${candidate.source}`);
+    console.log(`  priority: ${candidate.priority}`);
   }
 }
 

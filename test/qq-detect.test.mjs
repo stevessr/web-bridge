@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectQQBinary, extractExecutableFromDesktopExec, tokenizeDesktopExec } from '../src/qq-detect.mjs';
+import { detectQQBinary, extractExecutableFromDesktopExec, qqCandidatePriority, tokenizeDesktopExec } from '../src/qq-detect.mjs';
 
 test('tokenizeDesktopExec preserves quoted paths', () => {
   assert.deepEqual(
@@ -21,6 +21,14 @@ test('extractExecutableFromDesktopExec handles env prefixes', () => {
 
 test('extractExecutableFromDesktopExec handles direct Exec values', () => {
   assert.equal(extractExecutableFromDesktopExec('/opt/QQ/qq %U'), '/opt/QQ/qq');
+});
+
+test('direct packaged QQ host outranks PATH launcher wrappers', () => {
+  assert.equal(qqCandidatePriority('/opt/QQ/qq', 'well-known-direct-host'), 5);
+  assert.equal(qqCandidatePriority('/usr/bin/linuxqq', 'PATH:linuxqq'), 20);
+  assert.ok(
+    qqCandidatePriority('/opt/QQ/qq', 'well-known-direct-host') < qqCandidatePriority('/usr/bin/linuxqq', 'PATH:linuxqq')
+  );
 });
 
 test('QQ_BIN override wins and is validated', async () => {

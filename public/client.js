@@ -1,9 +1,22 @@
 const statusEl = document.querySelector('#status');
 const metaEl = document.querySelector('#meta');
+const viewport = document.querySelector('#viewport');
 const stage = document.querySelector('#stage');
 const scaler = document.querySelector('#scaler');
 const takeControlButton = document.querySelector('#take-control');
 const resyncButton = document.querySelector('#resync');
+const zoomOutButton = document.querySelector('#zoom-out');
+const zoomInButton = document.querySelector('#zoom-in');
+const fitViewButton = document.querySelector('#fit-view');
+const fullscreenButton = document.querySelector('#fullscreen');
+const retryButton = document.querySelector('#retry');
+const scaleLabel = document.querySelector('#scale-label');
+const viewerScale = document.querySelector('#viewer-scale');
+const viewerMode = document.querySelector('#viewer-mode');
+const connectionTitle = document.querySelector('#connection-title');
+const connectionDetail = document.querySelector('#connection-detail');
+const browserEndpoint = document.querySelector('#browser-endpoint');
+const hostState = document.querySelector('#host-state');
 const nodes = new Map();
 const fontStyle = document.createElement('style');
 fontStyle.id = 'web-bridge-font-faces';
@@ -17,27 +30,75 @@ let reconnectTimer = null;
 let reconnectDelay = 500;
 let lastPointerSent = 0;
 let hasControl = false;
+let attached = false;
+let socketOpen = false;
 let instanceId = null;
 let lastKeyboardInputAt = 0;
+let fitMode = true;
+let manualScale = 1;
+let currentScale = 1;
 
-function setStatus(text, ok) {
+if (browserEndpoint) browserEndpoint.textContent = location.host || '本机';
+
+function updateConnectionCopy(kind) {
+  const copies = {
+    connecting: ['正在连接桥接服务', '正在建立本地 WebSocket 连接。', '连接中'],
+    disconnected: ['桥接服务已断开', '连接已中断，Web Bridge 会自动重试。', '已断开'],
+    waiting: ['等待宿主 QQ NT', '桥接服务已经就绪，正在等待 QQ NT 的可调试渲染进程。', '等待 QQ'],
+    syncing: ['正在同步 QQ NT', '已发现 QQ NT，正在获取完整界面与初始状态。', '同步中'],
+    error: ['连接出现问题', 'Web Bridge 暂时无法完成同步，可立即重试。', '异常'],
+    ready: ['QQ NT 已连接', '远程界面已经准备就绪。', hasControl ? '可控制' : '只读']
+  };
+  const [title, detail, host] = copies[kind] || copies.connecting;
+  if (connectionTitle) connectionTitle.textContent = title;
+  if (connectionDetail) connectionDetail.textContent = detail;
+  if (hostState) hostState.textContent = host;
+}
+
+function updateControls() {
+  document.body.dataset.control = hasControl ? 'granted' : attached ? 'readonly' : 'none';
+  if (takeControlButton) {
+    takeControlButton.disabled = !socketOpen || !attached || hasControl;
+    const label = takeControlButton.querySelector('.button-label');
+    if (label) label.textContent = hasControl ? '已接管' : '接管控制';
+    takeControlButton.title = hasControl ? '当前客户端拥有控制权' : '请求控制权';
+  }
+  if (resyncButton) resyncButton.disabled = !socketOpen || !attached;
+  const canScale = Boolean(snapshot?.viewport);
+  if (zoomOutButton) zoomOutButton.disabled = !canScale;
+  if (zoomInButton) zoomInButton.disabled = !canScale;
+  if (fitViewButton) fitViewButton.disabled = !canScale;
+}
+
+function setStatus(text, ok, kind = ok ? 'ready' : 'error') {
   statusEl.textContent = text;
   document.body.dataset.connected = ok ? 'true' : 'false';
+  document.body.dataset.status = kind;
+  updateConnectionCopy(kind);
+  updateControls();
 }
 
 function connect() {
   clearTimeout(reconnectTimer);
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  socketOpen = false;
+  attached = false;
+  hasControl = false;
+  setStatus('正在连接桥接服务…', false, 'connecting');
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   socket = new WebSocket(`${protocol}//${location.host}/ws`);
   socket.addEventListener('open', () => {
+    socketOpen = true;
     reconnectDelay = 500;
-    setStatus('已连接桥接服务，正在同步…', true);
+    setStatus('桥接服务已连接 · 正在发现 QQ NT', false, 'waiting');
     send({ type: 'resync' });
   });
   socket.addEventListener('message', onMessage);
   socket.addEventListener('close', () => {
+    socketOpen = false;
+    attached = false;
     hasControl = false;
-    setStatus('桥接服务已断开，正在重连…', false);
+    setStatus('桥接服务已断开 · 正在重连', false, 'disconnected');
     const delay = reconnectDelay + Math.random() * reconnectDelay * 0.2;
     reconnectDelay = Math.min(10000, reconnectDelay * 1.7);
     reconnectTimer = setTimeout(connect, delay);
@@ -55,12 +116,14 @@ function onMessage(event) {
       send({ type: 'resync' });
     }
     instanceId = message.instanceId || instanceId;
+    attached = Boolean(message.attached);
     hasControl = message.control === 'granted';
-    if (message.attached) {
-      setStatus(hasControl ? 'QQ NT 已连接 · 可控制' : 'QQ NT 已连接 · 只读', true);
+    if (attached) {
+      const ready = Boolean(snapshot?.root);
+      setStatus(hasControl ? 'QQ NT 已连接 · 可控制' : 'QQ NT 已连接 · 只读', ready, ready ? 'ready' : 'syncing');
       metaEl.textContent = `${message.target?.title || 'QQ NT'} · r${message.revision ?? revision}`;
     } else {
-      setStatus('等待宿主 QQ NT…', false);
+      setStatus('等待宿主 QQ NT…', false, 'waiting');
       metaEl.textContent = '';
     }
     return;
@@ -71,6 +134,7 @@ function onMessage(event) {
   }
   if (message.type === 'patch') {
     if (message.baseRevision !== revision) {
+      setStatus('版本发生变化 · 正在重新同步', false, 'syncing');
       send({ type: 'resync' });
       return;
     }
@@ -78,15 +142,16 @@ function onMessage(event) {
     return;
   }
   if (message.type === 'resyncRequired') {
+    setStatus('宿主要求重新同步…', false, 'syncing');
     send({ type: 'resync' });
     return;
   }
   if (message.type === 'controlDenied') {
     hasControl = false;
-    setStatus('QQ NT 已连接 · 当前由另一客户端控制', true);
+    setStatus('QQ NT 已连接 · 当前由另一客户端控制', true, 'ready');
     return;
   }
-  if (message.type === 'rateLimited') setStatus('输入过快，已限流', true);
+  if (message.type === 'rateLimited') setStatus('输入过快 · 已临时限流', true, 'ready');
 }
 
 function send(message) {
@@ -217,16 +282,18 @@ function renderSnapshot(next) {
   revision = Number(next.revision) || 0;
   applyMeta(next);
   if (previousActive) focusMirror(previousActive);
+  attached = true;
+  setStatus(hasControl ? 'QQ NT 已连接 · 可控制' : 'QQ NT 已连接 · 只读', true, 'ready');
 }
 
 function applyMeta(meta) {
   if (Array.isArray(meta.fontFaces)) fontStyle.textContent = meta.fontFaces.join('\n');
   if (meta.title) document.title = `${meta.title} · Web Bridge`;
-  const viewport = meta.viewport || snapshot?.viewport;
-  if (viewport) {
-    snapshot = { ...(snapshot || {}), ...meta, viewport };
-    const width = Math.max(1, Number(viewport.width) || 1);
-    const height = Math.max(1, Number(viewport.height) || 1);
+  const sourceViewport = meta.viewport || snapshot?.viewport;
+  if (sourceViewport) {
+    snapshot = { ...(snapshot || {}), ...meta, viewport: sourceViewport };
+    const width = Math.max(1, Number(sourceViewport.width) || 1);
+    const height = Math.max(1, Number(sourceViewport.height) || 1);
     stage.style.width = `${width}px`;
     stage.style.height = `${height}px`;
     scaler.style.width = `${width}px`;
@@ -234,6 +301,7 @@ function applyMeta(meta) {
     fitStage();
   }
   metaEl.textContent = `${meta.title || snapshot?.title || 'QQ NT'} · r${revision}`;
+  updateControls();
 }
 
 function applyPatchBatch(message) {
@@ -241,6 +309,7 @@ function applyPatchBatch(message) {
   for (const patch of message.patches ?? []) {
     const target = nodes.get(Number(patch.id));
     if (!target) {
+      setStatus('界面状态失配 · 正在重新同步', false, 'syncing');
       send({ type: 'resync' });
       return;
     }
@@ -271,16 +340,43 @@ function applyPatchBatch(message) {
   if (previousActive) focusMirror(previousActive);
 }
 
+function clampScale(value) {
+  return Math.min(2, Math.max(.25, value));
+}
+
 function fitStage() {
-  if (!snapshot?.viewport) return;
-  const availableWidth = Math.max(1, window.innerWidth);
-  const availableHeight = Math.max(1, window.innerHeight - 32);
+  if (!snapshot?.viewport || !viewport) return;
+  const availableWidth = Math.max(1, viewport.clientWidth);
+  const availableHeight = Math.max(1, viewport.clientHeight);
   const sourceWidth = Math.max(1, Number(snapshot.viewport.width) || 1);
   const sourceHeight = Math.max(1, Number(snapshot.viewport.height) || 1);
-  const scale = Math.min(availableWidth / sourceWidth, availableHeight / sourceHeight, 1);
+  const autoScale = Math.min(availableWidth / sourceWidth, availableHeight / sourceHeight, 1);
+  const scale = fitMode ? autoScale : clampScale(manualScale);
+  currentScale = scale;
+  const scaledWidth = sourceWidth * scale;
+  const scaledHeight = sourceHeight * scale;
+  const offsetX = Math.max(0, (availableWidth - scaledWidth) / 2);
+  const offsetY = Math.max(0, (availableHeight - scaledHeight) / 2);
   scaler.style.transform = `scale(${scale})`;
-  scaler.parentElement.style.setProperty('--scaled-width', `${sourceWidth * scale}px`);
-  scaler.parentElement.style.setProperty('--scaled-height', `${sourceHeight * scale}px`);
+  scaler.style.left = `${offsetX}px`;
+  scaler.style.top = `${offsetY}px`;
+  viewport.style.setProperty('--scaled-width', `${Math.max(availableWidth, scaledWidth + offsetX * 2)}px`);
+  viewport.style.setProperty('--scaled-height', `${Math.max(availableHeight, scaledHeight + offsetY * 2)}px`);
+  const percent = `${Math.round(scale * 100)}%`;
+  if (scaleLabel) scaleLabel.textContent = fitMode ? '适应' : percent;
+  if (viewerScale) viewerScale.textContent = percent;
+  if (viewerMode) viewerMode.textContent = fitMode ? '自动适应' : '手动缩放';
+  if (fitViewButton) {
+    fitViewButton.classList.toggle('active', fitMode);
+    fitViewButton.setAttribute('aria-pressed', String(fitMode));
+  }
+}
+
+function setManualScale(value) {
+  if (fitMode) manualScale = currentScale;
+  fitMode = false;
+  manualScale = clampScale(value);
+  fitStage();
 }
 
 function elementFromEvent(event) {
@@ -369,7 +465,7 @@ stage.addEventListener('change', async (event) => {
     const files = [...(event.target.files || [])];
     if (!Number.isFinite(id) || !files.length) return;
     try {
-      setStatus(`正在上传 ${files.length} 个文件到宿主…`, true);
+      setStatus(`正在上传 ${files.length} 个文件到宿主…`, true, 'ready');
       const uploadTokens = [];
       for (const file of files) {
         const response = await fetch(`/upload?nodeId=${encodeURIComponent(id)}&name=${encodeURIComponent(file.name)}`, {
@@ -382,14 +478,25 @@ stage.addEventListener('change', async (event) => {
       }
       send({ type: 'fileCommit', nodeId: id, uploadTokens });
       event.target.value = '';
-      setStatus('文件已交给 QQ NT 处理', true);
+      setStatus('文件已交给 QQ NT 处理', true, 'ready');
     } catch (error) {
-      setStatus(`文件上传失败：${error.message}`, false);
+      setStatus(`文件上传失败：${error.message}`, true, 'ready');
     }
   }
 }, true);
 
 document.addEventListener('keydown', (event) => {
+  if (event.altKey && !event.ctrlKey && !event.metaKey) {
+    if (event.key === '0') {
+      event.preventDefault(); fitMode = true; fitStage(); return;
+    }
+    if (event.key === '-' && snapshot?.viewport) {
+      event.preventDefault(); setManualScale(currentScale / 1.15); return;
+    }
+    if ((event.key === '=' || event.key === '+') && snapshot?.viewport) {
+      event.preventDefault(); setManualScale(currentScale * 1.15); return;
+    }
+  }
   if (!activeNodeId || !hasControl || event.isComposing) return;
   if (event.key === 'F5' || ((event.ctrlKey || event.metaKey) && ['l', 'r'].includes(event.key.toLowerCase()))) return;
   event.preventDefault();
@@ -427,6 +534,34 @@ document.addEventListener('paste', (event) => {
 }, true);
 
 takeControlButton?.addEventListener('click', () => send({ type: 'takeControl' }));
-resyncButton?.addEventListener('click', () => send({ type: 'resync' }));
+resyncButton?.addEventListener('click', () => {
+  setStatus('正在重新同步 QQ NT…', false, 'syncing');
+  send({ type: 'resync' });
+});
+zoomOutButton?.addEventListener('click', () => setManualScale(currentScale / 1.15));
+zoomInButton?.addEventListener('click', () => setManualScale(currentScale * 1.15));
+fitViewButton?.addEventListener('click', () => { fitMode = true; fitStage(); });
+retryButton?.addEventListener('click', () => {
+  if (socket?.readyState === WebSocket.OPEN) {
+    setStatus('正在重新发现并同步 QQ NT…', false, attached ? 'syncing' : 'waiting');
+    send({ type: 'resync' });
+  } else {
+    try { socket?.close(); } catch {}
+    socket = null;
+    connect();
+  }
+});
+fullscreenButton?.addEventListener('click', async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch {}
+});
+document.addEventListener('fullscreenchange', () => {
+  if (fullscreenButton) fullscreenButton.title = document.fullscreenElement ? '退出全屏' : '全屏';
+  fitStage();
+});
 window.addEventListener('resize', fitStage);
+if ('ResizeObserver' in window && viewport) new ResizeObserver(fitStage).observe(viewport);
+updateControls();
 connect();

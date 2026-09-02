@@ -3,25 +3,73 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101217">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>QQ NT Web Bridge</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body data-connected="false" data-status="connecting" data-control="none">
   <header id="statusbar">
-    <span class="dot" aria-hidden="true"></span>
-    <span id="status">正在连接宿主 QQ NT…</span>
-    <div id="actions">
-      <button id="take-control" type="button">接管控制</button>
-      <button id="resync" type="button">重新同步</button>
+    <div class="brand" aria-label="QQ NT Web Bridge">
+      <span class="brand-mark" aria-hidden="true">WB</span>
+      <span class="brand-copy">
+        <strong>Web Bridge</strong>
+        <small>QQ NT</small>
+      </span>
     </div>
-    <span id="meta"></span>
+
+    <div class="connection-summary" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="status">正在连接桥接服务…</span>
+      <span id="meta"></span>
+    </div>
+
+    <nav id="actions" aria-label="远程控制工具栏">
+      <button id="take-control" class="toolbar-button primary" type="button" title="请求控制权">
+        <span class="button-icon" aria-hidden="true">●</span>
+        <span class="button-label">接管控制</span>
+      </button>
+      <button id="resync" class="toolbar-button" type="button" title="重新获取完整界面">
+        <span class="button-icon" aria-hidden="true">↻</span>
+        <span class="button-label">重新同步</span>
+      </button>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <button id="zoom-out" class="toolbar-button icon-only" type="button" title="缩小" aria-label="缩小">−</button>
+      <button id="fit-view" class="toolbar-button compact active" type="button" title="自动适应窗口" aria-pressed="true">
+        <span id="scale-label">适应</span>
+      </button>
+      <button id="zoom-in" class="toolbar-button icon-only" type="button" title="放大" aria-label="放大">+</button>
+      <button id="fullscreen" class="toolbar-button icon-only" type="button" title="全屏" aria-label="切换全屏">⛶</button>
+    </nav>
   </header>
-  <main id="viewport">
+
+  <main id="viewport" tabindex="-1">
     <div id="scaler">
-      <div id="stage" aria-label="QQ NT remote DOM"></div>
+      <div id="stage" aria-label="QQ NT 远程界面"></div>
+    </div>
+
+    <section id="connection-panel" aria-live="polite">
+      <div class="connection-card">
+        <div class="connection-orbit" aria-hidden="true"><span></span></div>
+        <p class="eyebrow">QQ NT · REMOTE DOM</p>
+        <h1 id="connection-title">正在连接桥接服务</h1>
+        <p id="connection-detail">Web Bridge 正在建立本地 WebSocket 连接。</p>
+        <div class="connection-facts">
+          <span><i aria-hidden="true"></i><b>浏览器</b><em id="browser-endpoint">本机</em></span>
+          <span><i aria-hidden="true"></i><b>宿主</b><em id="host-state">等待中</em></span>
+        </div>
+        <button id="retry" type="button">立即重试</button>
+        <p class="connection-hint">请保持 QQ NT 与 <code>pnpm dev:qq</code> 运行。此页面只镜像经过清理的 DOM，不加载 QQ 的脚本。</p>
+      </div>
+    </section>
+
+    <div id="viewer-hud" aria-hidden="true">
+      <span id="viewer-scale">100%</span>
+      <span class="hud-separator">·</span>
+      <span id="viewer-mode">自动适应</span>
     </div>
   </main>
+
   <script type="module" src="/client.js"></script>
 </body>
 </html>
