@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tracing::warn;
 use web_bridge_protocol::{AccountRef, ServerFrame};
 
 use crate::{
@@ -52,11 +53,21 @@ pub struct CoreState {
 impl CoreState {
     pub fn new(role: RuntimeRole, config: CoreConfig) -> Self {
         let (events, _) = broadcast::channel(4096);
+        let accounts = match std::fs::create_dir_all(&config.data_dir)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+            .and_then(|()| AccountRegistry::open(&config.data_dir.join("accounts.sqlite")))
+        {
+            Ok(registry) => registry,
+            Err(error) => {
+                warn!(%error, "failed to open persistent account registry; using memory only");
+                AccountRegistry::default()
+            }
+        };
         Self {
             role,
             config,
             events,
-            accounts: AccountRegistry::default(),
+            accounts,
             qq: DashMap::new(),
             qq_pending: DashMap::new(),
             matrix: DashMap::new(),
