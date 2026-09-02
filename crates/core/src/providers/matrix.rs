@@ -77,16 +77,16 @@ pub async fn login_password(
     let sync_state = state.clone();
     let sync_account = account.clone();
     let task = tokio::spawn(async move {
-        if let Err(error) = sync_client.sync(SyncSettings::default()).await {
-            if let Some(snapshot) = sync_state.accounts.set_status(
+        if let Err(error) = sync_client.sync(SyncSettings::default()).await
+            && let Some(snapshot) = sync_state.accounts.set_status(
                 &sync_account,
                 AccountStatus::Error,
                 Some(error.to_string()),
-            ) {
-                let _ = sync_state
-                    .events
-                    .send(ServerFrame::AccountChanged { account: snapshot });
-            }
+            )
+        {
+            let _ = sync_state
+                .events
+                .send(ServerFrame::AccountChanged { account: snapshot });
         }
     });
 
