@@ -1,0 +1,22 @@
+# Environment variables are authoritative in the bootstrap server.
+# This file documents the intended durable configuration model.
+
+[server]
+bind = "0.0.0.0:8787"
+public_url = "https://bridge.example.com"
+
+[auth]
+client_token = "replace-me"
+napcat_token = "replace-me"
+
+[providers.qq]
+mode = "server"
+adapter = "napcat-onebot11"
+
+[providers.matrix]
+default_mode = "client"
+allow_server = true
+
+[providers.telegram]
+default_mode = "client"
+allow_server = true

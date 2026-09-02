@@ -1,62 +1,98 @@
-# Architecture
+# web-bridge v2 architecture
 
-## Trust boundary
+## 1. Non-negotiable routing invariant
 
-`web-bridge` treats the QQ NT process as the only authoritative application runtime. QQ renderer JavaScript, preload bridges, Electron IPC, credentials, native modules and filesystem access remain on the host.
-
-The web client is intentionally a presentation terminal. It receives sanitized DOM/style/state structures and opaque resource endpoints, but never QQ's executable renderer bundle or an arbitrary remote-evaluation channel.
-
-## Runtime path
+QQ is **always server-owned**:
 
 ```text
-Browser DOM
-   |  revisioned patches / typed input RPC
-   v
-web-bridge host
-   |  allow-listed CDP
-   v
-QQ Chromium renderer
-   |  original event handlers / preload IPC
-   v
-Electron Main / host resources
+QQ NT + NapCatQQ
+      |
+      | OneBot 11 Reverse WebSocket
+      v
+Rust Server
+      |
+      | web-bridge protocol (WS now; resumable sync later)
+      v
+Flutter + Rust Client
 ```
 
-## DOM capture
+There is deliberately no `QQ -> client direct` adapter. The invariant exists in three layers: the shared Rust protocol (`Network::permits_route`), the server command validator, and the client account model/native policy function.
 
-The host installs `src/injected.mjs` through `Page.addScriptToEvaluateOnNewDocument` and `Runtime.evaluate`; QQ package files are unchanged. The helper assigns stable numeric IDs to live nodes, sanitizes attributes, computes the CSS properties required for layout/visual fidelity, records control/media state and observes document plus discovered open Shadow Roots.
+Matrix and Telegram are provider-owned per account:
 
-Initial connection uses a full snapshot. Mutation records are collapsed into bounded local patch sets instead of serializing the whole document after every update. Child-list changes replace only the affected child subtree; text, attribute/style/state and viewport changes use narrower patches. Patch overflow falls back to a full integrity snapshot.
+```text
+                    +--> server-owned Matrix/Telegram connector
+Flutter UI <--------|
+                    +--> client-owned Matrix/Telegram connector
+```
 
-A periodic snapshot protects against synchronization drift and unusual custom rendering behavior that does not reliably produce useful mutation batches. Closed Shadow Roots remain an explicit compatibility boundary because normal page JavaScript cannot inspect them after creation.
+Changing ownership must not change conversation/message UI models.
 
-## Revisions and recovery
+## 2. Why NapCat uses reverse WebSocket
 
-The host owns a monotonic revision number. A patch contains `baseRevision` and `revision`. A browser refuses a patch whose base does not match its local revision and asks for resynchronization.
+NapCat is placed beside the QQ runtime and actively connects to the server. The server therefore does not need to expose NapCat's own HTTP/WS API, and clients never receive NapCat credentials. `X-Self-ID` identifies the QQ account so multiple NapCat instances/accounts can connect concurrently.
 
-WebSocket send backpressure is monitored per client. A slow client is dropped from the live patch/snapshot stream instead of accumulating an unbounded send queue and receives `resyncRequired` after its send buffer recovers. This prevents one browser from causing unbounded host memory growth.
+Recommended NapCat settings:
 
-## Input path
+- WebSocket Client / Reverse WebSocket: enabled
+- URL: `wss://bridge.example.com/onebot/v11/ws`
+- token: same secret as `WEB_BRIDGE_NAPCAT_TOKEN`
+- `messagePostFormat`: `array`
+- reconnect: enabled
+- self-message reporting: optional, but recommended for multi-device reconciliation
 
-The browser can request only normalized operations: focus, pointer, click, wheel, key, text, select, file commit, resync and control-lease operations. It cannot choose CDP methods or JavaScript expressions.
+## 3. Server responsibilities
 
-Pointer coordinates are represented relative to a mirrored node. The host resolves that node against the real QQ DOM and uses its current bounding rectangle before `Input.dispatchMouseEvent`. Keyboard/text events use `Input.dispatchKeyEvent` and `Input.insertText`, so QQ's original React/Vue listeners and IPC execute on the host.
+The Rust server owns:
 
-Hover-sensitive nodes are explicitly marked after host pointer movement so computed `:hover` visuals can be patched back to the browser even though hover itself is not a DOM mutation.
+- NapCat connections and QQ action/event translation;
+- authentication, device sessions and account ACLs;
+- durable event sequencing and offline sync (next milestone);
+- attachment/media proxy and object storage (next milestone);
+- optional Matrix and Telegram providers;
+- push fan-out and presence aggregation.
 
-## Resources
+It must not expose raw OneBot directly to Flutter.
 
-URLs discovered in DOM attributes, computed CSS and `@font-face` rules are replaced by random per-process tokens. The original URL remains only in host memory. A client can request only a token already discovered from QQ.
+## 4. Client responsibilities
 
-Resources are loaded from Chromium's resource tree when available, then from a credentialed renderer-side fetch fallback. Response and cache sizes are bounded. Cached resources support HTTP byte ranges for media playback.
+Flutter owns UI/navigation/account setup. Rust owns native policy, cryptographic/session helpers and future local database/sync primitives through `flutter_rust_bridge`.
 
-## Files
+For **client-owned Matrix**, use Matrix Dart SDK directly. This branch pins the same `stevessr/matrix-dart-sdk` revision currently used by Extera, so MSC behavior does not silently diverge.
 
-A client-side HTML file selection is streamed to a private temporary directory on the host. The host validates an opaque upload token and uses the real file-input remote object with `DOM.setFileInputFiles`. The resulting QQ input/change path remains in the host renderer. Temporary files expire automatically and are removed during shutdown.
+For Telegram, the provider boundary is intentionally not coupled to a library yet. A client-owned implementation can use TDLib or a Rust MTProto implementation; a server-owned implementation can use the same unified message model behind the server.
 
-## Multi-client control
+## 5. Unified protocol
 
-Multiple clients may observe the same mirror. By default only one client has the controller lease; other clients are read-only. The lease starts when control is assigned and can move after an idle timeout or explicit release. Concurrent controllers require the explicit `WEB_BRIDGE_MULTI_CONTROL=1` override.
+`crates/protocol` defines:
 
-## Deployment boundary
+- network/account identity;
+- route ownership;
+- conversation identity;
+- rich message parts;
+- client command frames;
+- server event/ack/error/provider-state frames.
 
-The HTTP/WebSocket layer can use built-in Basic/Bearer authentication. Non-loopback HTTP binding without authentication is rejected by default. CDP has a separate, stricter rule: it must remain loopback-only unless an explicit dangerous override is supplied.
+The bootstrap uses JSON over WebSocket for inspectability. Production sync should add monotonic sequence IDs, resume cursors, idempotency keys, per-device acknowledgement and bounded replay; binary media must never be embedded in ordinary WS frames.
+
+## 6. Security model
+
+Bootstrap tokens are intentionally simple. Production design should use:
+
+1. server user login -> short-lived access token + rotating refresh token;
+2. per-device key material and revocation;
+3. a distinct credential for each NapCat instance/account rather than one global token;
+4. TLS-only external endpoints;
+5. account ACL checks on every command/event subscription;
+6. SSRF-safe media fetching and size/MIME limits.
+
+QQ credentials remain on the NapCat host; the Flutter client gets only web-bridge credentials.
+
+## 7. Milestones
+
+- M0 (this commit): greenfield tree, protocol, Rust server, NapCat RX/TX, Flutter shell, Matrix SDK bootstrap.
+- M1: SQLite/PostgreSQL event store, seq/cursor sync, per-user auth, multi-device sessions.
+- M2: complete OneBot mapping (reply/forward/voice/video/files/reactions/notices), media service, history API.
+- M3: full Matrix client provider and account migration between client/server ownership.
+- M4: Telegram client + server providers.
+- M5: push, background sync, E2EE/key backup, calls, production observability/deployment.

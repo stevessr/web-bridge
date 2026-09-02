@@ -4,35 +4,27 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
-  test:
+  rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: '22'
-      - run: npm install --ignore-scripts
-      - run: npm test
-      - name: Syntax validation
-        run: |
-          node --check src/cdp.mjs
-          node --check src/config.mjs
-          node --check src/auth.mjs
-          node --check src/protocol.mjs
-          node --check src/injected.mjs
-          node --check src/host.mjs
-          node --check src/host-multi.mjs
-          node --check src/qq-detect.mjs
-          node --check src/qq-main-shim.mjs
-          node --check src/electron-cdp-bootstrap.mjs
-          node --check src/doctor.mjs
-          node --check public/client.js
-          bash -n scripts/qq-web-bridge.sh
-          bash -n deploy/download-linuxqq.sh
-          bash -n deploy/docker-entrypoint.sh
-      - run: node src/qq-detect.mjs --help
+          components: rustfmt,clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  flutter-analyze:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
