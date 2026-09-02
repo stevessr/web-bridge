@@ -6,6 +6,7 @@ pub mod napcat;
 pub mod providers;
 pub mod remote;
 pub mod state;
+pub mod storage;
 pub mod web;
 
 use std::sync::Arc;
