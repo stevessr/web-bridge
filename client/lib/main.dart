@@ -260,19 +260,21 @@ class _HomePageState extends State<HomePage> {
               )
             else
               for (final account in items)
-                RadioListTile<String>(
-                  value: account.key,
-                  groupValue: activeAccount[network],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() => activeAccount[network] = value);
-                    }
-                  },
+                ListTile(
+                  selected: activeAccount[network] == account.key,
+                  onTap: () => setState(
+                    () => activeAccount[network] = account.key,
+                  ),
+                  leading: Icon(
+                    activeAccount[network] == account.key
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                  ),
                   title: Text(account.label),
                   subtitle: Text(
                     '${account.accountId} · ${account.mode.name} · ${account.status.name}',
                   ),
-                  secondary: _statusIcon(account.status),
+                  trailing: _statusIcon(account.status),
                 ),
           ],
         ),
