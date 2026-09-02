@@ -3,12 +3,14 @@
   const state = {
     socket: null,
     activeNodeId: null,
+    activeEditable: false,
     composing: false,
     pendingPointer: null,
     pointerFrame: 0,
     pendingWheel: null,
     wheelFrame: 0,
-    lastTextKey: null
+    lastTextKey: null,
+    lastComposition: null
   };
 
   function isBridgeSocket(socket) {
@@ -39,6 +41,29 @@
   const stage = document.querySelector('#stage');
   if (!stage) return;
 
+  const inputProxy = document.createElement('textarea');
+  inputProxy.id = 'web-bridge-input-proxy';
+  inputProxy.tabIndex = -1;
+  inputProxy.autocomplete = 'off';
+  inputProxy.setAttribute('autocorrect', 'off');
+  inputProxy.setAttribute('autocapitalize', 'off');
+  inputProxy.setAttribute('spellcheck', 'false');
+  inputProxy.setAttribute('aria-label', 'Remote text input');
+  Object.assign(inputProxy.style, {
+    position: 'fixed',
+    left: '0',
+    top: '0',
+    width: '1px',
+    height: '1px',
+    padding: '0',
+    border: '0',
+    opacity: '0',
+    pointerEvents: 'none',
+    resize: 'none',
+    zIndex: '-1'
+  });
+  document.body.append(inputProxy);
+
   function hasControl() {
     return document.body.dataset.control === 'granted';
   }
@@ -49,6 +74,10 @@
 
   function isInsideStage(event) {
     return eventPath(event).includes(stage);
+  }
+
+  function keyboardScope(event) {
+    return event.target === inputProxy || isInsideStage(event);
   }
 
   function elementId(element) {
@@ -80,7 +109,8 @@
 
   function isEditable(element) {
     if (!(element instanceof HTMLElement)) return false;
-    return isTextInput(element) || element.isContentEditable || ['true', 'plaintext-only'].includes(String(element.getAttribute('contenteditable')).toLowerCase());
+    const contentEditable = String(element.getAttribute('contenteditable') || '').toLowerCase();
+    return isTextInput(element) || element.isContentEditable || contentEditable === 'true' || contentEditable === 'plaintext-only';
   }
 
   function editableTarget(event) {
@@ -96,49 +126,38 @@
     return { alt: event.altKey, ctrl: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey };
   }
 
-  function rememberFocus(event) {
-    if (!isInsideStage(event)) return;
-    const editable = editableTarget(event);
-    const target = mirroredTarget(event);
-    const selected = editable || target;
-    if (!selected) return;
-    state.activeNodeId = selected.nodeId;
+  function focusInputProxy() {
+    if (!state.activeEditable || !state.activeNodeId) return;
+    try {
+      inputProxy.value = '';
+      inputProxy.focus({ preventScroll: true });
+      inputProxy.setSelectionRange(0, 0);
+    } catch {}
   }
 
-  window.addEventListener('focusin', rememberFocus, true);
-
-  window.addEventListener('pointerdown', (event) => {
-    if (!isInsideStage(event)) return;
+  function rememberStageTarget(event) {
     const editable = editableTarget(event);
     const target = mirroredTarget(event);
     const selected = editable || target;
     if (!selected) return;
     state.activeNodeId = selected.nodeId;
+    state.activeEditable = Boolean(editable);
+    if (editable) queueMicrotask(focusInputProxy);
+  }
 
-    if (!editable || !hasControl()) return;
-    try { editable.element.focus({ preventScroll: true }); } catch {}
-    send({ type: 'focus', nodeId: editable.nodeId });
-    event.stopImmediatePropagation();
+  window.addEventListener('pointerdown', (event) => {
+    if (!isInsideStage(event)) {
+      state.activeNodeId = null;
+      state.activeEditable = false;
+      state.composing = false;
+      try { inputProxy.blur(); } catch {}
+      return;
+    }
+    rememberStageTarget(event);
   }, true);
 
-  window.addEventListener('click', (event) => {
-    if (!hasControl() || !isInsideStage(event)) return;
-    const editable = editableTarget(event);
-    const target = mirroredTarget(event);
-    if (!editable || !target) return;
-
-    state.activeNodeId = editable.nodeId;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    send({ type: 'focus', nodeId: editable.nodeId });
-    send({
-      type: 'click',
-      nodeId: target.nodeId,
-      nx: target.nx,
-      ny: target.ny,
-      button: event.button,
-      modifiers: modifiers(event)
-    });
+  window.addEventListener('focusin', (event) => {
+    if (isInsideStage(event)) rememberStageTarget(event);
   }, true);
 
   function flushPointer() {
@@ -170,7 +189,7 @@
     let deltaY = Number(event.deltaY) || 0;
     if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
       const lineHeight = Number.parseFloat(getComputedStyle(target.element).lineHeight);
-      const pixelsPerLine = Number.isFinite(lineHeight) && lineHeight > 0 ? Math.max(24, lineHeight) : 40;
+      const pixelsPerLine = Number.isFinite(lineHeight) && lineHeight > 0 ? Math.max(24, lineHeight * 1.5) : 40;
       deltaX *= pixelsPerLine;
       deltaY *= pixelsPerLine;
     } else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
@@ -203,8 +222,7 @@
     event.preventDefault();
     event.stopImmediatePropagation();
 
-    const previous = state.pendingWheel;
-    if (previous && previous.nodeId !== target.nodeId) flushWheel();
+    if (state.pendingWheel && state.pendingWheel.nodeId !== target.nodeId) flushWheel();
     if (state.pendingWheel) {
       state.pendingWheel.deltaX = Math.max(-5000, Math.min(5000, state.pendingWheel.deltaX + delta.deltaX));
       state.pendingWheel.deltaY = Math.max(-5000, Math.min(5000, state.pendingWheel.deltaY + delta.deltaY));
@@ -225,9 +243,9 @@
     if (!state.wheelFrame) state.wheelFrame = requestAnimationFrame(flushWheel);
   }, { capture: true, passive: false });
 
-  function activeEditable() {
-    const element = document.querySelector(`[data-wb-id="${state.activeNodeId}"]`);
-    return isEditable(element) ? element : null;
+  function reservedViewerShortcut(event) {
+    if (!event.altKey || event.ctrlKey || event.metaKey) return false;
+    return /^[0-9]$/.test(event.key) || event.key === '-' || event.key === '=' || event.key === '+';
   }
 
   function reservedBrowserShortcut(event) {
@@ -236,31 +254,43 @@
   }
 
   window.addEventListener('compositionstart', (event) => {
-    if (!isInsideStage(event)) return;
-    rememberFocus(event);
+    if (!hasControl() || !state.activeEditable || !state.activeNodeId || !keyboardScope(event)) return;
     state.composing = true;
+    event.stopImmediatePropagation();
   }, true);
 
   window.addEventListener('compositionend', (event) => {
-    if (!hasControl() || !state.activeNodeId || !isInsideStage(event)) {
+    if (!hasControl() || !state.activeEditable || !state.activeNodeId || !keyboardScope(event)) {
       state.composing = false;
       return;
     }
     state.composing = false;
-    const text = String(event.data || '');
-    if (!text) return;
     event.stopImmediatePropagation();
-    send({ type: 'text', nodeId: state.activeNodeId, text });
+    const text = String(event.data || '');
+    if (text) {
+      state.lastComposition = { text, at: performance.now() };
+      send({ type: 'text', nodeId: state.activeNodeId, text });
+    }
+    queueMicrotask(() => { inputProxy.value = ''; });
   }, true);
 
   window.addEventListener('keydown', (event) => {
-    if (!hasControl() || !state.activeNodeId || !isInsideStage(event)) return;
-    if (reservedBrowserShortcut(event)) return;
-    if (event.isComposing || state.composing || event.key === 'Process' || event.key === 'Dead') return;
+    if (!hasControl() || !state.activeNodeId || !keyboardScope(event)) return;
+    if (reservedBrowserShortcut(event) || reservedViewerShortcut(event)) return;
 
-    const editable = activeEditable();
-    const printable = event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
-    if (editable && printable) {
+    if (state.activeEditable && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    if (event.isComposing || state.composing || event.key === 'Process' || event.key === 'Dead') {
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    const altGraph = Boolean(event.getModifierState?.('AltGraph'));
+    const printable = event.key.length === 1 && !event.metaKey && ((!event.ctrlKey && !event.altKey) || altGraph);
+    if (state.activeEditable && printable) {
       event.preventDefault();
       event.stopImmediatePropagation();
       state.lastTextKey = { text: event.key, at: performance.now() };
@@ -282,13 +312,20 @@
   }, true);
 
   window.addEventListener('beforeinput', (event) => {
-    if (!hasControl() || !state.activeNodeId || !isInsideStage(event) || !activeEditable()) return;
-    if (event.isComposing || state.composing || event.inputType === 'insertCompositionText') return;
+    if (!hasControl() || !state.activeEditable || !state.activeNodeId || !keyboardScope(event)) return;
+
+    if (event.isComposing || state.composing || event.inputType === 'insertCompositionText') {
+      event.stopImmediatePropagation();
+      return;
+    }
 
     const data = typeof event.data === 'string' ? event.data : '';
-    if (event.inputType === 'insertText' && data) {
-      const recent = state.lastTextKey;
-      if (recent && recent.text === data && performance.now() - recent.at < 120) {
+    if ((event.inputType === 'insertText' || event.inputType === 'insertReplacementText') && data) {
+      const now = performance.now();
+      const recentKey = state.lastTextKey;
+      const recentComposition = state.lastComposition;
+      if ((recentKey && recentKey.text === data && now - recentKey.at < 120) ||
+          (recentComposition && recentComposition.text === data && now - recentComposition.at < 160)) {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;
@@ -313,11 +350,12 @@
   }, true);
 
   window.addEventListener('paste', (event) => {
-    if (!hasControl() || !state.activeNodeId || !isInsideStage(event) || !activeEditable()) return;
+    if (!hasControl() || !state.activeEditable || !state.activeNodeId || !keyboardScope(event)) return;
     const text = event.clipboardData?.getData('text/plain');
     if (!text) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     send({ type: 'text', nodeId: state.activeNodeId, text });
+    queueMicrotask(() => { inputProxy.value = ''; });
   }, true);
 })();
