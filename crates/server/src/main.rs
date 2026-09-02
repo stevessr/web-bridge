@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
-use web_bridge_core::{web, CoreConfig, CoreRuntime, RuntimeRole};
+use web_bridge_core::{CoreConfig, CoreRuntime, RuntimeRole, web};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,8 +20,10 @@ async fn main() -> Result<()> {
     let runtime = CoreRuntime::new(
         RuntimeRole::Server,
         CoreConfig {
-            client_token: env::var("WEB_BRIDGE_CLIENT_TOKEN").unwrap_or_else(|_| "dev-client-token".into()),
-            napcat_token: env::var("WEB_BRIDGE_NAPCAT_TOKEN").unwrap_or_else(|_| "dev-napcat-token".into()),
+            client_token: env::var("WEB_BRIDGE_CLIENT_TOKEN")
+                .unwrap_or_else(|_| "dev-client-token".into()),
+            napcat_token: env::var("WEB_BRIDGE_NAPCAT_TOKEN")
+                .unwrap_or_else(|_| "dev-napcat-token".into()),
         },
     );
 
