@@ -9,28 +9,44 @@ QQ NT + NapCatQQ
       |
       | OneBot 11 Reverse WebSocket
       v
-Rust Server
+Rust Server Core
       |
-      | web-bridge protocol (WS now; resumable sync later)
+      | web-bridge protocol
       v
-Flutter + Rust Client
+Rust Client Core <-> flutter_rust_bridge <-> Flutter UI
 ```
 
-There is deliberately no `QQ -> client direct` adapter. The invariant exists in three layers: the shared Rust protocol (`Network::permits_route`), the server command validator, and the client account model/native policy function.
+There is deliberately no `QQ -> client direct` adapter. The invariant is enforced by the shared protocol, shared account registry, shared command executor and Flutter-facing Rust API.
 
 Matrix and Telegram are provider-owned per account:
 
 ```text
-                    +--> server-owned Matrix/Telegram connector
-Flutter UI <--------|
-                    +--> client-owned Matrix/Telegram connector
+                         +--> embedded client-mode Rust Core
+Flutter UI <-> FRB <-----|      Matrix / Telegram provider
+                         |
+                         +--> remote Rust Server Core
+                                QQ / Matrix / Telegram provider
 ```
 
-Changing ownership must not change conversation/message UI models.
+Changing ownership does not change the account, conversation or message model. QQ is the only network whose ownership cannot be changed.
 
-## 2. Why NapCat uses reverse WebSocket
+## 2. Shared Rust Core
 
-NapCat is placed beside the QQ runtime and actively connects to the server. The server therefore does not need to expose NapCat's own HTTP/WS API, and clients never receive NapCat credentials. `X-Self-ID` identifies the QQ account so multiple NapCat instances/accounts can connect concurrently.
+`crates/core` is the business/runtime layer used by both deployment modes. It owns:
+
+- the multi-account registry and route policy;
+- the unified command executor;
+- Matrix provider sessions, sync and sending;
+- Telegram provider sessions, login challenges, updates and sending;
+- NapCat/OneBot translation used by the server runtime;
+- the client-to-server remote bridge;
+- the shared event bus.
+
+The server binary and Flutter native library are shells around this same Core. Provider behavior must not be reimplemented in Dart.
+
+## 3. Why NapCat uses reverse WebSocket
+
+NapCat is placed beside QQ and actively connects to the server. The server therefore does not expose NapCat's own HTTP/WS API, and clients never receive NapCat credentials. `X-Self-ID` identifies the QQ account so multiple NapCat instances/accounts can connect concurrently.
 
 Recommended NapCat settings:
 
@@ -39,60 +55,100 @@ Recommended NapCat settings:
 - token: same secret as `WEB_BRIDGE_NAPCAT_TOKEN`
 - `messagePostFormat`: `array`
 - reconnect: enabled
-- self-message reporting: optional, but recommended for multi-device reconciliation
+- self-message reporting: recommended for multi-device reconciliation
 
-## 3. Server responsibilities
+## 4. Server responsibilities
 
 The Rust server owns:
 
-- NapCat connections and QQ action/event translation;
-- authentication, device sessions and account ACLs;
-- durable event sequencing and offline sync (next milestone);
-- attachment/media proxy and object storage (next milestone);
-- optional Matrix and Telegram providers;
-- push fan-out and presence aggregation.
+- all QQ/NapCat connections;
+- optional server-owned Matrix and Telegram accounts;
+- client authentication and account authorization;
+- the server side of unified commands/events;
+- future durable event sequencing, offline replay and media proxying.
 
-It must not expose raw OneBot directly to Flutter.
+It must never expose raw OneBot frames to Flutter.
 
-## 4. Client responsibilities
+## 5. Client responsibilities
 
-Flutter owns UI/navigation/account setup. Rust owns native policy, cryptographic/session helpers and future local database/sync primitives through `flutter_rust_bridge`.
+The native client is split deliberately:
 
-For **client-owned Matrix**, use Matrix Dart SDK directly. This branch pins the same `stevessr/matrix-dart-sdk` revision currently used by Extera, so MSC behavior does not silently diverge.
+### Rust client core
 
-For Telegram, the provider boundary is intentionally not coupled to a library yet. A client-owned implementation can use TDLib or a Rust MTProto implementation; a server-owned implementation can use the same unified message model behind the server.
+- owns client-routed Matrix and Telegram providers;
+- owns the remote Server WebSocket;
+- mirrors server-owned account state into the same account registry;
+- automatically forwards server-routed commands;
+- emits one unified event stream to Flutter;
+- enforces the QQ server-only invariant even if UI input is malformed.
 
-## 5. Unified protocol
+### Flutter
+
+- renders navigation, account setup, account switching and message UI;
+- collects credentials/challenge answers and turns them into unified Commands;
+- displays Core account/message/error/challenge events;
+- does **not** own Matrix, Telegram or Server transport logic.
+
+`flutter_rust_bridge` is the only intended Flutter-to-Core boundary. Generated bindings are derived from `client/rust/src/api.rs`.
+
+## 6. Provider implementation
+
+### Matrix
+
+The shared Core uses `matrix-sdk` with an independent SQLite store per account. Password login, continuous sync, room text sending and incoming room-message translation are implemented in the same provider for both client-owned and server-owned routes.
+
+### Telegram
+
+The shared Core uses grammers with an independent SQLite session per account. It implements login-code and 2FA-password challenges, update streaming, peer caching and text sending. The same provider runs in client or server mode according to account route.
+
+### QQ
+
+QQ uses NapCatQQ/OneBot 11 only on the server. Multiple QQ accounts are keyed by their self ID and can remain connected concurrently.
+
+## 7. Unified protocol
 
 `crates/protocol` defines:
 
-- network/account identity;
-- route ownership;
-- conversation identity;
-- rich message parts;
-- client command frames;
-- server event/ack/error/provider-state frames.
+- network/account identity and route ownership;
+- account lifecycle snapshots;
+- conversation identity and rich message parts;
+- typed client Commands;
+- account/message/auth-challenge/ack/error server frames.
 
-The bootstrap uses JSON over WebSocket for inspectability. Production sync should add monotonic sequence IDs, resume cursors, idempotency keys, per-device acknowledgement and bounded replay; binary media must never be embedded in ordinary WS frames.
+JSON over WebSocket is currently used for inspectability. Durable production sync should add monotonic sequence IDs, resume cursors, idempotency keys, per-device acknowledgements and bounded replay. Binary media must not be embedded in ordinary WebSocket frames.
 
-## 6. Security model
+## 8. Security model
 
-Bootstrap tokens are intentionally simple. Production design should use:
+Bootstrap tokens remain intentionally simple. Production design should use:
 
-1. server user login -> short-lived access token + rotating refresh token;
-2. per-device key material and revocation;
-3. a distinct credential for each NapCat instance/account rather than one global token;
+1. short-lived user access tokens plus rotating refresh tokens;
+2. per-device keys and revocation;
+3. distinct credentials for NapCat instances/accounts;
 4. TLS-only external endpoints;
-5. account ACL checks on every command/event subscription;
-6. SSRF-safe media fetching and size/MIME limits.
+5. authorization checks on every account command and event subscription;
+6. SSRF-safe media fetching with strict size/MIME limits.
 
-QQ credentials remain on the NapCat host; the Flutter client gets only web-bridge credentials.
+QQ credentials remain on the NapCat host. Matrix/Telegram credentials and sessions remain in whichever Rust runtime owns that account.
 
-## 7. Milestones
+## 9. Current implementation status
 
-- M0 (this commit): greenfield tree, protocol, Rust server, NapCat RX/TX, Flutter shell, Matrix SDK bootstrap.
-- M1: SQLite/PostgreSQL event store, seq/cursor sync, per-user auth, multi-device sessions.
-- M2: complete OneBot mapping (reply/forward/voice/video/files/reactions/notices), media service, history API.
-- M3: full Matrix client provider and account migration between client/server ownership.
-- M4: Telegram client + server providers.
-- M5: push, background sync, E2EE/key backup, calls, production observability/deployment.
+Implemented:
+
+- greenfield Rust workspace and protocol v2;
+- shared multi-account Core;
+- QQ/NapCat reverse WebSocket server path;
+- Matrix provider in shared Core;
+- Telegram provider and auth challenges in shared Core;
+- client RemoteBridge and server-account mirroring;
+- shared command executor;
+- Flutter-facing FRB API boundary;
+- CI fmt/clippy/test/analyze and dependency caching.
+
+Next integration work:
+
+- generated FRB bindings wired into Flutter;
+- removal of the legacy Dart `ServerGateway` path;
+- Matrix/Telegram account-login and challenge UI;
+- persisted client settings and active-account selection;
+- durable event sequencing/history/media services;
+- production authentication and multi-device authorization.
