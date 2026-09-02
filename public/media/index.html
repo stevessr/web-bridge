@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#111318">
+  <title>web-bridge · 自动烤肉控制台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">WB</div>
+        <div>
+          <strong>web-bridge</strong>
+          <span>Auto Fansub Console</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-view="overview"><span>◫</span>概览</button>
+        <button class="nav-item" data-view="jobs"><span>≡</span>任务</button>
+        <button class="nav-item" data-view="config"><span>⌘</span>配置</button>
+        <button class="nav-item" data-view="diagnostics"><span>⌁</span>诊断与日志</button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="tiny-label">流水线状态</div>
+        <div class="runtime-pill" id="sidebar-runtime"><i></i><span>连接中</span></div>
+        <div class="config-path" id="config-path">—</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">自动烤肉控制台</h1>
+          <p id="page-subtitle">YouTube → ASR → 翻译 → 字幕 → Bilibili</p>
+        </div>
+        <div class="top-actions">
+          <button class="icon-button" id="refresh-button" title="刷新" aria-label="刷新">↻</button>
+          <button class="button secondary" id="dry-run-button">试运行</button>
+          <button class="button primary" id="run-button">立即执行</button>
+          <button class="button success" id="loop-button">启动自动轮询</button>
+        </div>
+      </header>
+
+      <div id="banner" class="banner hidden" role="status"></div>
+
+      <section class="view active" data-view-panel="overview">
+        <div class="hero-grid">
+          <article class="hero-card">
+            <div class="hero-copy">
+              <div class="eyebrow">PIPELINE</div>
+              <h2>从订阅到投稿，一条流水线完成</h2>
+              <p>发现 YouTube 新视频后自动下载、转写、翻译、生成字幕并投稿至指定 Bilibili 账号。</p>
+            </div>
+            <div class="pipeline" aria-label="媒体处理流水线">
+              <div class="stage"><b>01</b><span>YouTube</span><small>发现 / 下载</small></div>
+              <i>→</i>
+              <div class="stage"><b>02</b><span>ASR</span><small id="stage-asr">—</small></div>
+              <i>→</i>
+              <div class="stage"><b>03</b><span>翻译</span><small id="stage-translation">—</small></div>
+              <i>→</i>
+              <div class="stage"><b>04</b><span>字幕</span><small id="stage-subtitle">—</small></div>
+              <i>→</i>
+              <div class="stage"><b>05</b><span>Bilibili</span><small>自动投稿</small></div>
+            </div>
+          </article>
+
+          <article class="status-card">
+            <div class="card-head">
+              <span>当前运行</span>
+              <span class="badge" id="runtime-badge">IDLE</span>
+            </div>
+            <div class="runtime-main" id="runtime-main">空闲</div>
+            <div class="runtime-meta" id="runtime-meta">等待下一次操作</div>
+            <div class="progress-track"><span id="runtime-progress"></span></div>
+            <button class="button danger hidden" id="stop-button">停止自动轮询</button>
+          </article>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat"><span>总任务</span><strong id="stat-total">0</strong><small>已发现视频</small></article>
+          <article class="stat"><span>处理中</span><strong id="stat-running">0</strong><small>当前工作项</small></article>
+          <article class="stat"><span>已完成</span><strong id="stat-completed">0</strong><small>成功投稿</small></article>
+          <article class="stat"><span>待重试</span><strong id="stat-failed">0</strong><small>failed + dead</small></article>
+        </div>
+
+        <div class="two-col">
+          <article class="panel">
+            <div class="panel-head">
+              <div><h3>YouTube 订阅账号</h3><p>每个账号可绑定独立 cookies、订阅源与投稿账号。</p></div>
+              <span class="count-badge" id="youtube-count">0</span>
+            </div>
+            <div class="account-list" id="youtube-accounts"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div><h3>Bilibili 投稿账号</h3><p>按 YouTube 来源路由到不同投稿账号。</p></div>
+              <span class="count-badge" id="bilibili-count">0</span>
+            </div>
+            <div class="account-list" id="bilibili-accounts"></div>
+          </article>
+        </div>
+
+        <article class="panel recent-panel">
+          <div class="panel-head">
+            <div><h3>最近任务</h3><p>按更新时间显示最新处理记录。</p></div>
+            <button class="text-button" data-go="jobs">查看全部 →</button>
+          </div>
+          <div class="compact-jobs" id="recent-jobs"></div>
+        </article>
+      </section>
+
+      <section class="view" data-view-panel="jobs">
+        <article class="panel full-panel">
+          <div class="jobs-toolbar">
+            <div>
+              <h3>任务队列</h3>
+              <p>查看发现、处理中、失败与完成的视频。</p>
+            </div>
+            <div class="filters">
+              <input class="input search" id="job-search" placeholder="搜索标题 / Video ID / 账号">
+              <select class="input" id="job-status-filter">
+                <option value="all">全部状态</option>
+                <option value="discovered">待处理</option>
+                <option value="running">处理中</option>
+                <option value="completed">已完成</option>
+                <option value="failed">失败待重试</option>
+                <option value="dead">已停止重试</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>视频</th><th>YouTube 账号</th><th>状态</th><th>尝试</th><th>更新时间</th><th>Bilibili</th><th></th></tr></thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+          </div>
+          <div class="empty hidden" id="jobs-empty">没有匹配的任务</div>
+        </article>
+      </section>
+
+      <section class="view" data-view-panel="config">
+        <div class="config-layout">
+          <article class="panel editor-panel">
+            <div class="panel-head editor-head">
+              <div><h3>media.json</h3><p>保存前会使用与 CLI 相同的规则进行完整校验。</p></div>
+              <div class="editor-actions">
+                <button class="button ghost" id="format-config-button">格式化</button>
+                <button class="button ghost" id="reset-config-button">放弃修改</button>
+                <button class="button primary" id="save-config-button">保存配置</button>
+              </div>
+            </div>
+            <textarea id="config-editor" spellcheck="false" aria-label="媒体配置 JSON"></textarea>
+            <div class="editor-status" id="editor-status">尚未修改</div>
+          </article>
+
+          <aside class="panel config-guide">
+            <h3>关键配置</h3>
+            <dl id="config-summary"></dl>
+            <div class="callout">
+              <strong>凭据不会写进这里</strong>
+              <p>API key 只配置环境变量名称；YouTube / Bilibili 登录态使用独立 cookie 文件路径。</p>
+            </div>
+            <div class="callout warning">
+              <strong>yt-dlp 附加参数</strong>
+              <p>参数以 argv 数组传递，不经过 shell。危险执行型参数默认被拦截。</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="diagnostics">
+        <div class="diagnostic-grid">
+          <article class="panel doctor-panel">
+            <div class="panel-head">
+              <div><h3>环境诊断</h3><p>检查 yt-dlp、ffmpeg、biliup、ASR 与账号文件。</p></div>
+              <button class="button primary" id="doctor-button">运行 Doctor</button>
+            </div>
+            <div id="doctor-results" class="doctor-list"><div class="empty-inline">尚未运行诊断</div></div>
+          </article>
+
+          <article class="panel auth-panel">
+            <h3>WebUI 访问</h3>
+            <p>如果服务启用了 Bearer token，请在此输入。只保存在当前浏览器会话。</p>
+            <label>访问 Token<input class="input" id="token-input" type="password" autocomplete="off" placeholder="WEB_BRIDGE_MEDIA_WEB_TOKEN"></label>
+            <button class="button secondary" id="save-token-button">保存并重新连接</button>
+          </article>
+        </div>
+
+        <article class="panel log-panel">
+          <div class="panel-head">
+            <div><h3>实时日志</h3><p>前端每秒增量拉取管理服务日志。</p></div>
+            <button class="text-button" id="clear-log-button">清空本地显示</button>
+          </div>
+          <div class="terminal" id="log-output" aria-live="polite"></div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
