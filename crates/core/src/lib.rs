@@ -64,13 +64,9 @@ impl CoreRuntime {
         device_id: String,
     ) -> anyhow::Result<()> {
         remote::ensure_client_role(&self.state)?;
-        let bridge = remote::RemoteBridge::connect(
-            Arc::clone(&self.state),
-            endpoint,
-            token,
-            device_id,
-        )
-        .await?;
+        let bridge =
+            remote::RemoteBridge::connect(Arc::clone(&self.state), endpoint, token, device_id)
+                .await?;
         let mut remote = self
             .state
             .remote
