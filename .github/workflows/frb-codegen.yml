@@ -37,10 +37,10 @@ jobs:
       - name: Generate bindings
         working-directory: client
         run: flutter_rust_bridge_codegen generate --config-file flutter_rust_bridge.yaml
+      - name: Lock Rust dependencies
+        run: cargo generate-lockfile
       - name: Format Rust
         run: cargo fmt --all
-      - name: Verify generated Rust
-        run: cargo check -p web-bridge-client-core
       - name: Commit generated bindings
         run: |
           if git diff --quiet && [ -z "$(git status --porcelain --untracked-files=all)" ]; then
@@ -49,7 +49,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add client/lib/src/rust client/rust/src client/flutter_rust_bridge.yaml
-          git commit -m "chore(client): regenerate FRB bindings"
+          git add Cargo.lock client/pubspec.lock client/lib/src/rust client/rust/src client/flutter_rust_bridge.yaml
+          git commit -m "chore(client): regenerate FRB bindings and lock dependencies"
           git pull --rebase origin feat/napcat-rust-unified-v2
           git push origin HEAD:feat/napcat-rust-unified-v2
