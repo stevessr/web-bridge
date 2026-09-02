@@ -222,43 +222,62 @@ export class ShimCdpConnection extends ListenerSet {
     socket.setNoDelay(true);
     socket.setEncoding('utf8');
     this.socket = socket;
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Electron debugger shim connect timeout')), 10_000);
-      const cleanup = () => { clearTimeout(timer); socket.off('connect', onConnect); socket.off('error', onError); };
-      const onConnect = () => { cleanup(); resolve(); };
-      const onError = (error) => { cleanup(); reject(error); };
-      socket.once('connect', onConnect);
-      socket.once('error', onError);
-    });
-    socket.on('data', (chunk) => this.#onData(chunk));
-    socket.on('error', (error) => this.emit('error', { error }));
-    socket.on('close', () => this.#onClose());
-    await this.#request({ op: 'attach', targetId: this.targetId }, 10_000);
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          socket.destroy();
+          reject(new Error('Electron debugger shim connect timeout'));
+        }, 10_000);
+        const cleanup = () => { clearTimeout(timer); socket.off('connect', onConnect); socket.off('error', onError); };
+        const onConnect = () => { cleanup(); resolve(); };
+        const onError = (error) => { cleanup(); reject(error); };
+        socket.once('connect', onConnect);
+        socket.once('error', onError);
+      });
+      socket.on('data', (chunk) => this.#onData(chunk));
+      socket.on('error', (error) => this.emit('error', { error }));
+      socket.on('close', () => this.#onClose());
+      await this.#request({ op: 'attach', targetId: this.targetId }, 10_000);
+    } catch (error) {
+      try { socket.destroy(); } catch {}
+      if (this.socket === socket) this.socket = null;
+      throw error;
+    }
   }
 
-  call(method, params = {}, timeoutMs = this.callTimeoutMs) {
-    return this.#request({ method, params }, timeoutMs);
+  async call(method, params = {}, timeoutMs = this.callTimeoutMs) {
+    try {
+      return await this.#request({ method, params }, timeoutMs);
+    } catch (error) {
+      if (method === 'Runtime.enable' || method === 'Page.enable') this.close();
+      throw error;
+    }
   }
 
   close() {
     this.closed = true;
-    try { this.socket?.end(); } catch {}
-    try { this.socket?.destroy(); } catch {}
+    const socket = this.socket;
+    this.socket = null;
+    try { socket?.end(); } catch {}
+    try { socket?.destroy(); } catch {}
   }
 
   #request(payload, timeoutMs) {
     if (!this.socket || this.socket.destroyed) return Promise.reject(new Error('Electron debugger shim is not connected'));
+    const socket = this.socket;
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Electron debugger shim call timed out: ${payload.method || payload.op}`));
+        const error = new Error(`Electron debugger shim call timed out: ${payload.method || payload.op}`);
+        try { socket.destroy(error); } catch {}
+        reject(error);
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); }
       });
-      this.socket.write(`${JSON.stringify({ id, ...payload, token: shimToken() })}\n`, (error) => {
+      socket.write(`${JSON.stringify({ id, ...payload, token: shimToken() })}\n`, (error) => {
         if (!error) return;
         const waiter = this.pending.get(id);
         this.pending.delete(id);
