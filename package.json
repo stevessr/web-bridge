@@ -12,6 +12,10 @@
     "start": "node src/host.mjs",
     "dev:qq": "bash scripts/qq-web-bridge.sh",
     "detect:qq": "node src/qq-detect.mjs --all",
+    "media": "node src/media/cli.mjs run",
+    "media:once": "node src/media/cli.mjs once",
+    "media:doctor": "node src/media/cli.mjs doctor",
+    "media:state": "node src/media/cli.mjs state",
     "test": "node --test",
     "doctor": "node src/doctor.mjs"
   },
