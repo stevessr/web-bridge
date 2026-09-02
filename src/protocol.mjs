@@ -29,6 +29,12 @@ function nodeId(value) {
   return parsed > 0 ? parsed : null;
 }
 
+function screenId(value) {
+  if (value == null || value === '') return null;
+  const parsed = String(value);
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(parsed) ? parsed : null;
+}
+
 function modifiers(value = {}) {
   return {
     alt: Boolean(value.alt),
@@ -38,31 +44,41 @@ function modifiers(value = {}) {
   };
 }
 
+function scoped(message, result) {
+  if (message.screenId == null || message.screenId === '') return result;
+  const id = screenId(message.screenId);
+  return id ? { ...result, screenId: id } : null;
+}
+
 export function parseClientMessage(raw, { maxTextBytes = 64 * 1024 } = {}) {
   let message;
   try { message = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)); } catch { return null; }
   if (!message || typeof message !== 'object' || Array.isArray(message)) return null;
 
   switch (message.type) {
+    case 'selectScreen': {
+      const id = screenId(message.screenId);
+      return id ? { type: 'selectScreen', screenId: id } : null;
+    }
     case 'resync':
-      return { type: 'resync' };
+      return scoped(message, { type: 'resync' });
     case 'takeControl':
-      return { type: 'takeControl' };
+      return scoped(message, { type: 'takeControl' });
     case 'releaseControl':
-      return { type: 'releaseControl' };
+      return scoped(message, { type: 'releaseControl' });
     case 'fileCommit': {
       const id = nodeId(message.nodeId);
       const tokens = Array.isArray(message.uploadTokens) ? message.uploadTokens.filter((token) => /^[A-Za-z0-9_-]{16,128}$/.test(String(token))).slice(0, 32).map(String) : [];
-      return id && tokens.length ? { type: 'fileCommit', nodeId: id, uploadTokens: tokens } : null;
+      return id && tokens.length ? scoped(message, { type: 'fileCommit', nodeId: id, uploadTokens: tokens }) : null;
     }
     case 'focus': {
       const id = nodeId(message.nodeId);
-      return id ? { type: 'focus', nodeId: id } : null;
+      return id ? scoped(message, { type: 'focus', nodeId: id }) : null;
     }
     case 'select': {
       const id = nodeId(message.nodeId);
       const index = Math.trunc(number(message.index, -1, 0, 100000));
-      return id && index >= 0 ? { type: 'select', nodeId: id, index } : null;
+      return id && index >= 0 ? scoped(message, { type: 'select', nodeId: id, index }) : null;
     }
     case 'pointer':
     case 'click':
@@ -81,24 +97,24 @@ export function parseClientMessage(raw, { maxTextBytes = 64 * 1024 } = {}) {
         base.deltaX = number(message.deltaX, 0, -5000, 5000);
         base.deltaY = number(message.deltaY, 0, -5000, 5000);
       }
-      return base;
+      return scoped(message, base);
     }
     case 'key': {
       const id = message.nodeId == null ? null : nodeId(message.nodeId);
       const key = String(message.key || '').slice(0, 64);
       const code = String(message.code || '').slice(0, 64);
       if (!key && !code) return null;
-      return {
+      return scoped(message, {
         type: 'key', nodeId: id, key, code,
         text: typeof message.text === 'string' ? message.text.slice(0, 16) : '',
         repeat: Boolean(message.repeat), modifiers: modifiers(message.modifiers)
-      };
+      });
     }
     case 'text': {
       const id = message.nodeId == null ? null : nodeId(message.nodeId);
       const text = String(message.text || '');
       if (!text || Buffer.byteLength(text) > maxTextBytes) return null;
-      return { type: 'text', nodeId: id, text };
+      return scoped(message, { type: 'text', nodeId: id, text });
     }
     default:
       return null;
