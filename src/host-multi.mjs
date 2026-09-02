@@ -639,18 +639,30 @@ async function markVisual(session, nodeId) {
   await session.cdp.call('Runtime.evaluate', { expression: `globalThis.__WEB_BRIDGE__?.markVisual(${nodeId})`, returnByValue: true });
 }
 
-async function resizeHostWindow(session, width, height) {
+async function readHostWindow(session) {
   if (!session?.cdp) throw new Error('QQ screen is not attached');
   const current = await session.cdp.call('Browser.getWindowForTarget');
   const windowId = Number(current?.windowId);
   if (!Number.isInteger(windowId)) throw new Error('QQ window id is unavailable');
-  const state = String(current?.bounds?.windowState || 'normal');
+  return { windowId, bounds: current?.bounds || null };
+}
+
+async function resizeHostWindow(session, width, height) {
+  const current = await readHostWindow(session);
+  const state = String(current.bounds?.windowState || 'normal');
   if (state !== 'normal') {
-    await session.cdp.call('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+    await session.cdp.call('Browser.setWindowBounds', { windowId: current.windowId, bounds: { windowState: 'normal' } });
   }
-  await session.cdp.call('Browser.setWindowBounds', { windowId, bounds: { width, height } });
-  const updated = await session.cdp.call('Browser.getWindowForTarget').catch(() => null);
+  await session.cdp.call('Browser.setWindowBounds', { windowId: current.windowId, bounds: { width, height } });
+  const updated = await readHostWindow(session).catch(() => null);
   return updated?.bounds || { width, height, windowState: 'normal' };
+}
+
+async function setHostWindowState(session, windowState) {
+  const current = await readHostWindow(session);
+  await session.cdp.call('Browser.setWindowBounds', { windowId: current.windowId, bounds: { windowState } });
+  const updated = await readHostWindow(session).catch(() => null);
+  return updated?.bounds || { ...(current.bounds || {}), windowState };
 }
 
 async function selectScreen(state, screenId) {
@@ -670,7 +682,11 @@ async function selectScreen(state, screenId) {
   metrics.screenSwitches += previousId === screenId ? 0 : 1;
   if (!controllerByScreen.has(screenId)) claimControl(state, screenId);
   broadcastStatus();
-  if (next.cdp) await captureSnapshot(next, 'screen-select');
+  if (next.cdp) {
+    await captureSnapshot(next, 'screen-select');
+    const current = await readHostWindow(next).catch(() => null);
+    if (current?.bounds) send(state, { type: 'windowBounds', screenId, bounds: current.bounds }, { force: true });
+  }
 }
 
 async function handleClientMessage(state, raw) {
@@ -681,6 +697,12 @@ async function handleClientMessage(state, raw) {
   const session = screenForMessage(state, message) || resolveActiveSession(state);
   if (message.screenId && session?.id !== message.screenId) {
     send(state, { type: 'screenUnavailable', screenId: message.screenId }, { force: true });
+    return;
+  }
+  if (message.type === 'getWindowState') {
+    if (!session?.cdp) return sendStatus(state);
+    const current = await readHostWindow(session);
+    send(state, { type: 'windowBounds', screenId: session.id, bounds: current.bounds }, { force: true });
     return;
   }
   if (message.type === 'resync') {
@@ -699,6 +721,15 @@ async function handleClientMessage(state, raw) {
   state.controlActivity.set(session.id, Date.now());
   metrics.inputEvents += 1;
 
+  if (message.type === 'setWindowState') {
+    const bounds = await setHostWindowState(session, message.state);
+    broadcastToScreen(session.id, { type: 'windowBounds', screenId: session.id, bounds });
+    const timer = setTimeout(() => {
+      captureSnapshot(session, 'window-state').catch((error) => log('warn', 'window state snapshot failed', { screenId: session.id, error: error.message }));
+    }, 40);
+    timer.unref?.();
+    return;
+  }
   if (message.type === 'resizeWindow') {
     const bounds = await resizeHostWindow(session, message.width, message.height);
     broadcastToScreen(session.id, { type: 'windowBounds', screenId: session.id, bounds });

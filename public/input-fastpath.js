@@ -10,7 +10,9 @@
     pendingWheel: null,
     wheelFrame: 0,
     lastTextKey: null,
-    lastComposition: null
+    lastComposition: null,
+    observedSockets: new WeakSet(),
+    windowBoundsByScreen: new Map()
   };
 
   function isBridgeSocket(socket) {
@@ -22,8 +24,23 @@
     }
   }
 
+  function handleBridgeMessage(event) {
+    let message;
+    try { message = JSON.parse(typeof event.data === 'string' ? event.data : ''); } catch { return; }
+    if (message?.type !== 'windowBounds' || !message.bounds) return;
+    const id = String(message.screenId || '');
+    if (id) state.windowBoundsByScreen.set(id, message.bounds);
+    renderWindowBounds(message.bounds);
+  }
+
+  function observeBridgeSocket(socket) {
+    if (state.observedSockets.has(socket)) return;
+    state.observedSockets.add(socket);
+    socket.addEventListener('message', handleBridgeMessage);
+  }
+
   WebSocket.prototype.send = function patchedSend(data) {
-    if (isBridgeSocket(this)) state.socket = this;
+    if (isBridgeSocket(this)) { state.socket = this; observeBridgeSocket(this); }
     return nativeSend.call(this, data);
   };
 
@@ -70,6 +87,8 @@
   const windowHeightInput = document.querySelector('#window-height');
   const windowSizeApply = document.querySelector('#window-size-apply');
   const windowSizeLabel = document.querySelector('#window-size-label');
+  const windowStateLabel = document.querySelector('#window-state-label');
+  const windowStateRefresh = document.querySelector('#window-state-refresh');
 
   function stageSize() {
     const width = Math.round(Number.parseFloat(stage.style.width) || stage.clientWidth || 0);
@@ -82,6 +101,27 @@
       width: Math.max(320, Math.min(7680, Math.round(Number(width) || 0))),
       height: Math.max(240, Math.min(4320, Math.round(Number(height) || 0)))
     };
+  }
+
+  function stateText(value) {
+    return ({ normal: '普通', maximized: '最大化', minimized: '最小化', fullscreen: '全屏' })[value] || '未知';
+  }
+
+  function renderWindowBounds(bounds) {
+    if (!bounds) return;
+    const width = Math.round(Number(bounds.width) || 0);
+    const height = Math.round(Number(bounds.height) || 0);
+    if (windowWidthInput && width) windowWidthInput.value = String(width);
+    if (windowHeightInput && height) windowHeightInput.value = String(height);
+    if (windowSizeLabel && width && height) windowSizeLabel.textContent = `${width}×${height}`;
+    if (windowStateLabel) windowStateLabel.textContent = stateText(bounds.windowState);
+    for (const button of document.querySelectorAll('[data-window-state]')) {
+      button.classList.toggle('active', button.dataset.windowState === bounds.windowState);
+    }
+  }
+
+  function requestWindowState() {
+    send({ type: 'getWindowState' });
   }
 
   function fillWindowSize(size = stageSize()) {
@@ -99,6 +139,7 @@
   function toggleWindowSize() {
     if (!windowSizePopover || !windowSizeButton || !hasControl()) return;
     const opening = windowSizePopover.hidden;
+    if (opening) requestWindowState();
     if (opening) fillWindowSize();
     windowSizePopover.hidden = !opening;
     windowSizeButton.setAttribute('aria-expanded', String(opening));
@@ -114,6 +155,15 @@
       if (windowSizeLabel) windowSizeLabel.textContent = `${size.width}×${size.height}`;
       closeWindowSize();
     }
+  }
+
+  windowStateRefresh?.addEventListener('click', (event) => { event.stopPropagation(); requestWindowState(); });
+  for (const button of document.querySelectorAll('[data-window-state]')) {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!hasControl()) return;
+      send({ type: 'setWindowState', state: button.dataset.windowState });
+    });
   }
 
   windowSizeButton?.addEventListener('click', (event) => {
