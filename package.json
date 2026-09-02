@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "node --watch src/host.mjs",
     "start": "node src/host.mjs",
-    "dev:qq": "bash scripts/qq-web-bridge.sh",
+    "dev:qq": "WEB_BRIDGE_SHIM_POLL_MS=${WEB_BRIDGE_SHIM_POLL_MS:-33} bash scripts/qq-web-bridge.sh",
     "detect:qq": "node src/qq-detect.mjs --all",
     "test": "node --test",
     "doctor": "node src/doctor.mjs"
