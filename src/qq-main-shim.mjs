@@ -37,12 +37,17 @@ export function buildLoaderSource(originalMain) {
     `}\n` +
     `function targetRank(info) {\n` +
     `  let score = 0;\n` +
+    `  const haystack = (info?.title || '') + ' ' + (info?.url || '');\n` +
+    `  if (/\\#\\/main\\/(message|contact|setting)|\\#\\/main\\b/i.test(info?.url || '')) score += 5000;\n` +
+    `  if (/chatPoolWin=1|\\#\\/chat/i.test(info?.url || '')) score += 1200;\n` +
     `  if (info?.visible) score += 1000;\n` +
     `  if (info?.focused) score += 500;\n` +
     `  if (info?.kind === 'window') score += 250;\n` +
     `  else if (['browserView', 'webview', 'offscreen'].includes(info?.kind)) score += 120;\n` +
     `  if (info?.url && info.url !== 'about:blank') score += 50;\n` +
-    `  if (/qq|tencent/i.test((info?.title || '') + ' ' + (info?.url || ''))) score += 25;\n` +
+    `  if (/qq|tencent/i.test(haystack)) score += 25;\n` +
+    `  if (/hiddenWindow|hiddenPoolBaseWin/i.test(info?.url || '')) score -= 2000;\n` +
+    `  if (/\\#\\/blank|about:blank/i.test(info?.url || '')) score -= 1000;\n` +
     `  return score;\n` +
     `}\n` +
     `function debuggerCandidates(requestedId = '') {\n` +
@@ -74,30 +79,32 @@ export function buildLoaderSource(originalMain) {
     `    };\n` +
     `    const cleanup = () => {\n` +
     `      if (cleaned) return; cleaned = true;\n` +
-    `      if (target && !target.isDestroyed()) {\n` +
-    `        try { target.debugger.removeListener('message', onDebuggerMessage); } catch {}\n` +
-    `        try { target.debugger.removeListener('detach', onDebuggerDetach); } catch {}\n` +
-    `        if (ownsDebugger) { try { if (target.debugger.isAttached()) target.debugger.detach(); } catch {} }\n` +
-    `      }\n` +
+    `      const current = target; const owned = ownsDebugger;\n` +
     `      target = null; ownsDebugger = false;\n` +
+    `      if (current && !current.isDestroyed()) {\n` +
+    `        try { current.debugger.removeListener('message', onDebuggerMessage); } catch {}\n` +
+    `        try { current.debugger.removeListener('detach', onDebuggerDetach); } catch {}\n` +
+    `        if (owned) { try { if (current.debugger.isAttached()) current.debugger.detach(); } catch {} }\n` +
+    `      }\n` +
     `    };\n` +
-    `    async function tryAttachCandidate(wc) {\n` +
+    `    function tryAttachCandidate(wc) {\n` +
     `      if (!wc || wc.isDestroyed()) throw new Error('renderer target no longer exists');\n` +
     `      let owns = false;\n` +
-    `      try {\n` +
-    `        if (!wc.debugger.isAttached()) {\n` +
-    `          try { wc.debugger.attach('1.3'); } catch (versionError) {\n` +
-    `            if (!wc.debugger.isAttached()) wc.debugger.attach();\n` +
-    `          }\n` +
+    `      if (!wc.debugger.isAttached()) {\n` +
+    `        try {\n` +
+    `          wc.debugger.attach('1.3');\n` +
     `          owns = true;\n` +
+    `        } catch (versionError) {\n` +
+    `          if (wc.debugger.isAttached()) return { wc, owns: false };\n` +
+    `          try {\n` +
+    `            wc.debugger.attach();\n` +
+    `            owns = true;\n` +
+    `          } catch (attachError) {\n` +
+    `            throw attachError?.message ? attachError : versionError;\n` +
+    `          }\n` +
     `        }\n` +
-    `        await wc.debugger.sendCommand('Runtime.enable');\n` +
-    `        await wc.debugger.sendCommand('Page.enable');\n` +
-    `        return { wc, owns };\n` +
-    `      } catch (error) {\n` +
-    `        if (owns) { try { if (wc.debugger.isAttached()) wc.debugger.detach(); } catch {} }\n` +
-    `        throw error;\n` +
     `      }\n` +
+    `      return { wc, owns };\n` +
     `    }\n` +
     `    async function handle(message) {\n` +
     `      const id = message && message.id;\n` +
@@ -112,8 +119,9 @@ export function buildLoaderSource(originalMain) {
     `        const candidates = debuggerCandidates(message.targetId);\n` +
     `        let lastError = null;\n` +
     `        for (const candidate of candidates) {\n` +
+    `          if (socket.destroyed) return;\n` +
     `          try {\n` +
-    `            const attached = await tryAttachCandidate(candidate.wc);\n` +
+    `            const attached = tryAttachCandidate(candidate.wc);\n` +
     `            target = attached.wc; ownsDebugger = attached.owns;\n` +
     `            target.debugger.on('message', onDebuggerMessage);\n` +
     `            target.debugger.on('detach', onDebuggerDetach);\n` +
