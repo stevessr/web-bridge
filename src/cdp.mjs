@@ -117,8 +117,10 @@ class ListenerSet {
 }
 
 export class CdpConnection extends ListenerSet {
-  constructor(url, { callTimeoutMs = 15_000 } = {}) {
+  constructor(url, options = {}) {
+    if (String(url).startsWith('shim://')) return new ShimCdpConnection(url, options);
     super();
+    const { callTimeoutMs = 15_000 } = options;
     this.url = url;
     this.callTimeoutMs = callTimeoutMs;
     this.ws = null;
