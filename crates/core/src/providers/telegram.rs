@@ -9,11 +9,7 @@ use grammers_client::{
     update::Update,
 };
 use grammers_mtsender::SenderPool;
-use grammers_session::{
-    storages::SqliteSession,
-    types::PeerRef,
-    updates::UpdatesLike,
-};
+use grammers_session::{storages::SqliteSession, types::PeerRef, updates::UpdatesLike};
 use tokio::{
     sync::{Mutex, mpsc::UnboundedReceiver},
     task::AbortHandle,
@@ -97,7 +93,11 @@ pub async fn begin_login(
     });
     state.telegram.insert(account.clone(), telegram.clone());
 
-    if client.is_authorized().await.context("check Telegram session")? {
+    if client
+        .is_authorized()
+        .await
+        .context("check Telegram session")?
+    {
         *telegram.login.lock().await = LoginStage::Authorized;
         let snapshot = finish_authorized(state, account, telegram).await?;
         return Ok((snapshot, None));
@@ -138,10 +138,7 @@ pub async fn submit_code(
                 .accounts
                 .get(account)
                 .context("Telegram account disappeared")?;
-            Ok((
-                snapshot,
-                Some(AuthChallenge::TelegramPassword { hint }),
-            ))
+            Ok((snapshot, Some(AuthChallenge::TelegramPassword { hint })))
         }
         Err(error) => {
             mark_error(&state, account, &error.to_string());
@@ -314,10 +311,7 @@ async fn start_updates(
                         Some(Peer::Channel(_)) => ConversationKind::Channel,
                         None => ConversationKind::Private,
                     };
-                    let sender_name = message
-                        .sender()
-                        .and_then(Peer::name)
-                        .map(ToOwned::to_owned);
+                    let sender_name = message.sender().and_then(Peer::name).map(ToOwned::to_owned);
                     let message = UnifiedMessage {
                         id: message.id().to_string(),
                         account: task_account.clone(),
@@ -359,11 +353,10 @@ fn get_handle(state: &CoreState, account: &AccountRef) -> Result<Arc<TelegramHan
 }
 
 fn mark_error(state: &CoreState, account: &AccountRef, error: &str) {
-    if let Some(snapshot) = state.accounts.set_status(
-        account,
-        AccountStatus::Error,
-        Some(error.to_owned()),
-    ) {
+    if let Some(snapshot) = state
+        .accounts
+        .set_status(account, AccountStatus::Error, Some(error.to_owned()))
+    {
         let _ = state
             .events
             .send(ServerFrame::AccountChanged { account: snapshot });
