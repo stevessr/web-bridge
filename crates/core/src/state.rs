@@ -119,3 +119,83 @@ fn safe_component(value: &str) -> String {
         sanitized
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands;
+    use web_bridge_protocol::{AccountStatus, Network, RouteMode};
+
+    fn qq(id: &str) -> AccountRef {
+        AccountRef {
+            network: Network::Qq,
+            id: id.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn qq_pending_failures_are_scoped_to_one_account() {
+        let state = CoreState::new(RuntimeRole::Server, CoreConfig::default());
+        let account_a = qq("10001");
+        let account_b = qq("10002");
+        let (response_a, receive_a) = oneshot::channel();
+        let (response_b, _receive_b) = oneshot::channel();
+        state.qq_pending.insert(
+            "echo-a".into(),
+            PendingQqAction {
+                account: account_a.clone(),
+                response: response_a,
+            },
+        );
+        state.qq_pending.insert(
+            "echo-b".into(),
+            PendingQqAction {
+                account: account_b.clone(),
+                response: response_b,
+            },
+        );
+
+        state.fail_qq_pending(&account_a, "account A disconnected");
+
+        assert!(!state.qq_pending.contains_key("echo-a"));
+        assert!(state.qq_pending.contains_key("echo-b"));
+        assert_eq!(
+            receive_a.await.unwrap(),
+            Err("account A disconnected".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnecting_one_qq_account_keeps_the_other_online() {
+        let state = CoreState::new(RuntimeRole::Server, CoreConfig::default());
+        let account_a = qq("10001");
+        let account_b = qq("10002");
+        for account in [&account_a, &account_b] {
+            state
+                .accounts
+                .upsert(account.clone(), None, RouteMode::Server)
+                .unwrap();
+            state
+                .accounts
+                .set_status(account, AccountStatus::Online, None)
+                .unwrap();
+        }
+        let (sender_a, _receiver_a) = mpsc::unbounded_channel::<String>();
+        let (sender_b, _receiver_b) = mpsc::unbounded_channel::<String>();
+        state.qq.insert(account_a.clone(), sender_a);
+        state.qq.insert(account_b.clone(), sender_b);
+
+        commands::disconnect_provider(&state, &account_a).await;
+
+        assert!(!state.qq.contains_key(&account_a));
+        assert!(state.qq.contains_key(&account_b));
+        assert_eq!(
+            state.accounts.get(&account_a).unwrap().status,
+            AccountStatus::Offline
+        );
+        assert_eq!(
+            state.accounts.get(&account_b).unwrap().status,
+            AccountStatus::Online
+        );
+    }
+}
