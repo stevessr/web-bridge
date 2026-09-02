@@ -7,6 +7,7 @@ use web_bridge_protocol::{AccountRef, ServerFrame};
 use crate::{
     accounts::{AccountRegistry, RuntimeRole},
     providers::{matrix::MatrixHandle, telegram::TelegramHandle},
+    remote::RemoteBridge,
 };
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,8 @@ pub struct CoreState {
     pub matrix: DashMap<AccountRef, Arc<MatrixHandle>>,
     /// Telegram account -> independent MTProto client/session/login state.
     pub telegram: DashMap<AccountRef, Arc<TelegramHandle>>,
+    /// Client-mode connection to a remote web-bridge server.
+    pub remote: std::sync::Mutex<Option<RemoteBridge>>,
 }
 
 impl CoreState {
@@ -50,6 +53,7 @@ impl CoreState {
             qq: DashMap::new(),
             matrix: DashMap::new(),
             telegram: DashMap::new(),
+            remote: std::sync::Mutex::new(None),
         }
     }
 
