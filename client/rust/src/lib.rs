@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use web_bridge_core::{CoreConfig, CoreRuntime, RuntimeRole};
-use web_bridge_protocol::{AccountRef, Network, RouteMode, PROTOCOL_VERSION};
+use web_bridge_protocol::{AccountRef, Network, PROTOCOL_VERSION, RouteMode};
 
 static RUNTIME: OnceLock<CoreRuntime> = OnceLock::new();
 
@@ -31,17 +31,34 @@ pub fn register_account(
     let network = parse_network(&network).ok_or_else(|| "unknown network".to_owned())?;
     let route = parse_route(&route).ok_or_else(|| "unknown route".to_owned())?;
     let snapshot = runtime()
-        .register_account(AccountRef { network, id: account_id }, display_name, route)
+        .register_account(
+            AccountRef {
+                network,
+                id: account_id,
+            },
+            display_name,
+            route,
+        )
         .map_err(str::to_owned)?;
     serde_json::to_string(&snapshot).map_err(|error| error.to_string())
 }
 
 #[flutter_rust_bridge::frb(sync)]
-pub fn set_account_route(network: String, account_id: String, route: String) -> Result<String, String> {
+pub fn set_account_route(
+    network: String,
+    account_id: String,
+    route: String,
+) -> Result<String, String> {
     let network = parse_network(&network).ok_or_else(|| "unknown network".to_owned())?;
     let route = parse_route(&route).ok_or_else(|| "unknown route".to_owned())?;
     let snapshot = runtime()
-        .set_account_route(&AccountRef { network, id: account_id }, route)
+        .set_account_route(
+            &AccountRef {
+                network,
+                id: account_id,
+            },
+            route,
+        )
         .map_err(str::to_owned)?;
     serde_json::to_string(&snapshot).map_err(|error| error.to_string())
 }
@@ -51,7 +68,12 @@ pub fn remove_account(network: String, account_id: String) -> bool {
     let Some(network) = parse_network(&network) else {
         return false;
     };
-    runtime().remove_account(&AccountRef { network, id: account_id }).is_some()
+    runtime()
+        .remove_account(&AccountRef {
+            network,
+            id: account_id,
+        })
+        .is_some()
 }
 
 #[flutter_rust_bridge::frb(sync)]
