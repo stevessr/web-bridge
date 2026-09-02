@@ -11,10 +11,7 @@ use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{net::TcpStream, sync::mpsc, task::AbortHandle, time::sleep};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::Message,
-};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use uuid::Uuid;
 use web_bridge_protocol::{
     AccountRef, AccountSnapshot, ClientFrame, Command, Network, PROTOCOL_VERSION, RouteMode,
@@ -220,14 +217,7 @@ async fn run_remote_manager(
         };
 
         connected.store(true, Ordering::Release);
-        let result = run_connection(
-            &state,
-            current,
-            &device_id,
-            &mut outbound,
-            &pending,
-        )
-        .await;
+        let result = run_connection(&state, current, &device_id, &mut outbound, &pending).await;
 
         connected.store(false, Ordering::Release);
         fail_pending_requests(&state, &pending, "server connection was interrupted");

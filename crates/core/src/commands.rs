@@ -206,8 +206,8 @@ async fn send_qq(
         .map(|entry| entry.value().clone())
         .ok_or_else(|| anyhow::anyhow!("QQ account {} has no NapCat connection", account.id))?;
     let echo = request_id.to_string();
-    let action = napcat::build_send_action(conversation, parts, echo.clone())
-        .map_err(anyhow::Error::msg)?;
+    let action =
+        napcat::build_send_action(conversation, parts, echo.clone()).map_err(anyhow::Error::msg)?;
     let (response_tx, response_rx) = oneshot::channel();
     state.qq_pending.insert(
         echo.clone(),
