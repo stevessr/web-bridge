@@ -5,8 +5,9 @@ CDP_HOST="${WEB_BRIDGE_CDP_HOST:-127.0.0.1}"
 WEB_HOST="${WEB_BRIDGE_HOST:-127.0.0.1}"
 WEB_PORT="${WEB_BRIDGE_PORT:-8080}"
 # QQ 3.2.33-52892 accepts neither the Node inspector nor a usable Chromium
-# remote-debugging HTTP endpoint. The shadow main-entry shim therefore exposes
-# Electron's supported webContents.debugger API over a private loopback socket.
+# remote-debugging endpoint. The shadow main-entry shim therefore exposes a
+# private Electron webContents transport. Runtime evaluation/input are handled
+# with executeJavaScript/sendInputEvent instead of debugger.sendCommand().
 MAIN_SHIM_MODE="${WEB_BRIDGE_QQ_MAIN_SHIM:-auto}"
 # Kept only as an explicit diagnostic path for Electron builds whose
 # nodeCliInspect fuse is enabled.
@@ -16,8 +17,8 @@ case "$CDP_HOST" in
   127.0.0.1|localhost|::1) ;;
   *)
     if [[ "${WEB_BRIDGE_ALLOW_REMOTE_CDP:-0}" != "1" ]]; then
-      echo "[web-bridge] refusing non-loopback debugger host: $CDP_HOST" >&2
-      echo "[web-bridge] the debugger transport is privileged; keep it on loopback." >&2
+      echo "[web-bridge] refusing non-loopback bridge host: $CDP_HOST" >&2
+      echo "[web-bridge] the Electron bridge transport is privileged; keep it on loopback." >&2
       exit 3
     fi
     ;;
@@ -127,7 +128,7 @@ main_shim_disabled() {
 
 prepare_main_shim() {
   if main_shim_disabled; then
-    echo "[web-bridge] QQ main-entry debugger shim disabled by WEB_BRIDGE_QQ_MAIN_SHIM=$MAIN_SHIM_MODE"
+    echo "[web-bridge] QQ main-entry Electron shim disabled by WEB_BRIDGE_QQ_MAIN_SHIM=$MAIN_SHIM_MODE"
     return 1
   fi
   if [[ ! -f "$QQ_APP_PACKAGE" ]]; then
@@ -171,15 +172,14 @@ prepare_main_shim() {
   USE_MAIN_SHIM=1
   echo "[web-bridge] prepared temporary QQ shadow distribution (installed /opt/QQ is untouched)"
   echo "[web-bridge] shadow executable: $SHADOW_QQ_BIN"
-  echo "[web-bridge] using Electron webContents.debugger transport; Chromium remote-debugging-port is not required"
+  echo "[web-bridge] using Electron hybrid transport; QQ DevTools Runtime is not required"
   echo "[web-bridge] Chromium sandbox remains enabled; no bubblewrap/user namespace is used"
   return 0
 }
 
 launch_qq_main_shim() {
-  # The main shim itself owns CDP_PORT as a private line-delimited debugger proxy.
-  # Do not pass --remote-debugging-port here: Tencent's Electron build ignores it,
-  # and a working Chromium endpoint would conflict with the shim listener anyway.
+  # The main shim owns CDP_PORT as a private line-delimited Electron proxy.
+  # Do not pass --remote-debugging-port here: Tencent's Electron build ignores it.
   "$SHADOW_QQ_BIN" "$@" &
   QQ_PID=$!
 }
@@ -198,10 +198,10 @@ if [[ "$QQ_BIN" == /opt/QQ/qq || "$QQ_BIN" == /opt/qq/qq ]]; then
 elif [[ "$QQ_BIN" == */linuxqq ]]; then
   echo "[web-bridge] warning: selected a linuxqq launcher/wrapper; prefer QQ_BIN=/opt/QQ/qq" >&2
 fi
-echo "[web-bridge] private debugger endpoint: $CDP_HOST:$CDP_PORT"
+echo "[web-bridge] private bridge endpoint: $CDP_HOST:$CDP_PORT"
 
 # Bring the browser endpoint up before QQ finishes booting. listTargets supports
-# both ordinary Chromium CDP and the main-shim webContents.debugger transport.
+# ordinary Chromium CDP and the main-shim Electron transport.
 node src/host.mjs &
 BRIDGE_PID=$!
 echo "[web-bridge] browser endpoint: http://$WEB_HOST:$WEB_PORT"
@@ -210,7 +210,7 @@ prepare_main_shim || true
 
 # Experimental inspector path only. Known-current Linux QQ rejects --inspect-brk
 # because its Electron nodeCliInspect fuse is disabled. If explicitly enabled,
-# fall back to the shadow debugger bridge rather than to argv-only launch.
+# fall back to the shadow Electron bridge rather than to argv-only launch.
 if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP" != "off" ]]; then
   INSPECTOR_HOST="127.0.0.1"
   INSPECTOR_PORT="$(free_loopback_port)"
@@ -224,7 +224,7 @@ if [[ "$CDP_BOOTSTRAP" != "0" && "$CDP_BOOTSTRAP" != "false" && "$CDP_BOOTSTRAP"
     --cdp-host "$CDP_HOST" \
     --cdp-port "$CDP_PORT" \
     --timeout "${WEB_BRIDGE_QQ_BOOTSTRAP_TIMEOUT_MS:-15000}"; then
-    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with shadow debugger/argv fallback" >&2
+    echo "[web-bridge] inspector bootstrap unavailable; restarting QQ with shadow Electron/argv fallback" >&2
     kill "$QQ_PID" >/dev/null 2>&1 || true
     wait "$QQ_PID" 2>/dev/null || true
     QQ_PID=""
@@ -252,7 +252,7 @@ try {
 }
 NODE
     then
-      echo "[web-bridge] QQ webContents.debugger bridge is still unreachable; look above for 'QQ webContents.debugger bridge listening'" >&2
+      echo "[web-bridge] QQ Electron hybrid bridge is still unreachable; look above for 'QQ Electron hybrid bridge listening'" >&2
     fi
   else
     if ! node - "$CDP_HOST" "$CDP_PORT" <<'NODE' >/dev/null 2>&1
