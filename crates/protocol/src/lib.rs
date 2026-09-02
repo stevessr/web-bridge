@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +66,13 @@ pub enum ConversationKind {
 pub struct ConversationRef {
     pub kind: ConversationKind,
     pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConversationSnapshot {
+    pub account: AccountRef,
+    pub conversation: ConversationRef,
+    pub last_message_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,6 +175,25 @@ pub enum Command {
         conversation: ConversationRef,
         parts: Vec<MessagePart>,
     },
+    ListConversations {
+        account: AccountRef,
+        limit: u32,
+    },
+    ListMessages {
+        account: AccountRef,
+        conversation: ConversationRef,
+        before: Option<DateTime<Utc>>,
+        limit: u32,
+    },
+    GetCursor {
+        account: AccountRef,
+        key: String,
+    },
+    SetCursor {
+        account: AccountRef,
+        key: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -193,6 +219,20 @@ pub enum ServerFrame {
     },
     Message {
         message: UnifiedMessage,
+    },
+    Conversations {
+        request_id: Uuid,
+        conversations: Vec<ConversationSnapshot>,
+    },
+    Messages {
+        request_id: Uuid,
+        messages: Vec<UnifiedMessage>,
+    },
+    Cursor {
+        request_id: Uuid,
+        account: AccountRef,
+        key: String,
+        value: Option<String>,
     },
     Ack {
         request_id: Uuid,
