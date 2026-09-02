@@ -2,6 +2,7 @@ use std::{path::Path, sync::Mutex};
 
 use dashmap::DashMap;
 use rusqlite::{Connection, params};
+use serde_json::Value;
 use web_bridge_protocol::{AccountRef, AccountSnapshot, AccountStatus, Network, RouteMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,7 @@ impl RuntimeRole {
 #[derive(Default)]
 pub struct AccountRegistry {
     entries: DashMap<AccountRef, AccountSnapshot>,
+    metadata: DashMap<AccountRef, Value>,
     db: Option<Mutex<Connection>>,
 }
 
@@ -43,14 +45,18 @@ impl AccountRegistry {
                 route TEXT NOT NULL,
                 status TEXT NOT NULL,
                 last_error TEXT,
+                provider_metadata TEXT,
                 PRIMARY KEY (network, account_id)
             );",
         )?;
+        // Migration for databases created before provider metadata existed.
+        let _ = connection.execute("ALTER TABLE accounts ADD COLUMN provider_metadata TEXT", []);
 
         let entries = DashMap::new();
+        let metadata = DashMap::new();
         {
             let mut statement = connection.prepare(
-                "SELECT network, account_id, display_name, route, status, last_error FROM accounts",
+                "SELECT network, account_id, display_name, route, status, last_error, provider_metadata FROM accounts",
             )?;
             let rows = statement.query_map([], |row| {
                 let network: String = row.get(0)?;
@@ -63,11 +69,20 @@ impl AccountRegistry {
                     route,
                     status,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })?;
 
             for row in rows {
-                let (network, account_id, display_name, route, _status, last_error) = row?;
+                let (
+                    network,
+                    account_id,
+                    display_name,
+                    route,
+                    _status,
+                    last_error,
+                    raw_metadata,
+                ) = row?;
                 let Some(network) = parse_network(&network) else {
                     continue;
                 };
@@ -81,6 +96,11 @@ impl AccountRegistry {
                     network,
                     id: account_id,
                 };
+                if let Some(raw_metadata) = raw_metadata
+                    && let Ok(value) = serde_json::from_str(&raw_metadata)
+                {
+                    metadata.insert(account.clone(), value);
+                }
                 entries.insert(
                     account.clone(),
                     AccountSnapshot {
@@ -96,6 +116,7 @@ impl AccountRegistry {
 
         Ok(Self {
             entries,
+            metadata,
             db: Some(Mutex::new(connection)),
         })
     }
@@ -116,6 +137,27 @@ impl AccountRegistry {
 
     pub fn get(&self, account: &AccountRef) -> Option<AccountSnapshot> {
         self.entries.get(account).map(|entry| entry.value().clone())
+    }
+
+    pub fn provider_metadata(&self, account: &AccountRef) -> Option<Value> {
+        self.metadata.get(account).map(|entry| entry.value().clone())
+    }
+
+    pub fn set_provider_metadata(&self, account: &AccountRef, metadata: Value) -> Result<(), &'static str> {
+        if self.get(account).is_none() {
+            return Err("account not found");
+        }
+        self.metadata.insert(account.clone(), metadata.clone());
+        if let Some(db) = &self.db
+            && let Ok(connection) = db.lock()
+        {
+            let raw = metadata.to_string();
+            let _ = connection.execute(
+                "UPDATE accounts SET provider_metadata = ?3 WHERE network = ?1 AND account_id = ?2",
+                params![network_name(account.network), &account.id, raw],
+            );
+        }
+        Ok(())
     }
 
     pub fn upsert(
@@ -180,6 +222,7 @@ impl AccountRegistry {
 
     pub fn remove(&self, account: &AccountRef) -> Option<AccountSnapshot> {
         let removed = self.entries.remove(account).map(|(_, snapshot)| snapshot);
+        self.metadata.remove(account);
         if removed.is_some()
             && let Some(db) = &self.db
             && let Ok(connection) = db.lock()
@@ -271,6 +314,7 @@ fn parse_route(value: &str) -> Option<RouteMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use uuid::Uuid;
 
     #[test]
@@ -352,6 +396,36 @@ mod tests {
         assert_eq!(snapshot.route, RouteMode::Client);
         assert_eq!(snapshot.display_name.as_deref(), Some("Alice"));
         assert_eq!(snapshot.status, AccountStatus::Offline);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn provider_metadata_survives_restart_and_is_removed_with_account() {
+        let path =
+            std::env::temp_dir().join(format!("web-bridge-accounts-{}.sqlite", Uuid::new_v4()));
+        let account = AccountRef {
+            network: Network::Telegram,
+            id: "telegram-meta".into(),
+        };
+        {
+            let registry = AccountRegistry::open(&path).unwrap();
+            registry
+                .upsert(account.clone(), None, RouteMode::Client)
+                .unwrap();
+            registry
+                .set_provider_metadata(&account, json!({"api_id": 12345, "phone": "+1000"}))
+                .unwrap();
+        }
+        {
+            let registry = AccountRegistry::open(&path).unwrap();
+            assert_eq!(
+                registry.provider_metadata(&account),
+                Some(json!({"api_id": 12345, "phone": "+1000"}))
+            );
+            assert!(registry.remove(&account).is_some());
+        }
+        let restored = AccountRegistry::open(&path).unwrap();
+        assert!(restored.provider_metadata(&account).is_none());
         let _ = std::fs::remove_file(path);
     }
 
