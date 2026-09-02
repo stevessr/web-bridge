@@ -28,9 +28,11 @@ test('web UI client handles responsive scaling, screen switching and reconnect s
   assert.match(client, /正在重新发现并同步 QQ Screen/);
 });
 
-test('web UI keeps mirror styles scoped and screen tabs responsive', () => {
+test('web UI keeps mirror styles scoped and reconnects without covering the last frame', () => {
   assert.match(style, /#stage\s*\{/);
   assert.match(style, /#connection-panel\s*\{/);
+  assert.match(style, /#viewport:has\(#stage:not\(:empty\)\) #connection-panel/);
+  assert.match(style, /body:has\(#stage:not\(:empty\)\).*data-status=["']disconnected["']/s);
   assert.match(style, /prefers-reduced-motion/);
   assert.match(style, /safe-area-inset/);
   assert.match(screensStyle, /\.screen-tabs\s*\{/);
