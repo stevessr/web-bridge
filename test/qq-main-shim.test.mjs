@@ -14,12 +14,15 @@ test('shim package preserves QQ metadata and replaces only main entry', () => {
   assert.equal(original.main, './application/app_launcher/index.js');
 });
 
-test('loader exposes Electron webContents.debugger before loading original QQ main', () => {
+test('loader exposes Electron webContents.debugger and falls back across renderer targets', () => {
   const source = buildLoaderSource('./application/app_launcher/index.js');
   assert.match(source, /webContents\.getAllWebContents\(\)/);
-  assert.match(source, /webContents\.fromId/);
-  assert.match(source, /target\.debugger\.attach\('1\.3'\)/);
-  assert.match(source, /target\.debugger\.sendCommand/);
+  assert.match(source, /webContents\.fromId|debuggerCandidates/);
+  assert.match(source, /wc\.debugger\.attach\('1\.3'\)/);
+  assert.match(source, /wc\.debugger\.attach\(\)/);
+  assert.match(source, /sendCommand\('Runtime\.enable'\)/);
+  assert.match(source, /sendCommand\('Page\.enable'\)/);
+  assert.match(source, /no usable renderer debugger target/);
   assert.match(source, /QQ webContents\.debugger bridge listening/);
   assert.match(source, /require\(entry\)/);
   assert.doesNotMatch(source, /appendSwitch\('remote-debugging-port'/);
