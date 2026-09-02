@@ -119,6 +119,8 @@ function normalizeBilibiliAccount(account, index) {
   assertObject(account, `bilibili.accounts[${index}]`);
   const id = optionalString(account.id, `bilibili.accounts[${index}].id`).trim();
   if (!id) throw new Error(`bilibili.accounts[${index}].id is required`);
+  const copyright = account.copyright == null ? 2 : Number(account.copyright);
+  if (![1, 2].includes(copyright)) throw new Error(`bilibili.accounts[${index}].copyright must be 1 or 2`);
   return Object.freeze({
     id,
     enabled: account.enabled !== false,
@@ -127,7 +129,7 @@ function normalizeBilibiliAccount(account, index) {
     line: optionalString(account.line, `bilibili.accounts[${index}].line`),
     submit: optionalString(account.submit, `bilibili.accounts[${index}].submit`),
     tid: positiveInt(account.tid, `bilibili.accounts[${index}].tid`, 17),
-    copyright: account.copyright == null ? 2 : Number(account.copyright),
+    copyright,
     tags: stringArray(account.tags, `bilibili.accounts[${index}].tags`),
     extraArgs: stringArray(account.extraArgs, `bilibili.accounts[${index}].extraArgs`)
   });
@@ -155,6 +157,7 @@ export function normalizeMediaConfig(raw, { configDir = process.cwd() } = {}) {
 
   const config = {
     ...merged,
+    configDir: path.resolve(configDir),
     workDir: path.resolve(configDir, optionalString(merged.workDir, 'workDir', DEFAULTS.workDir)),
     pollIntervalSeconds: positiveInt(merged.pollIntervalSeconds, 'pollIntervalSeconds', DEFAULTS.pollIntervalSeconds),
     maxItemsPerPoll: positiveInt(merged.maxItemsPerPoll, 'maxItemsPerPoll', DEFAULTS.maxItemsPerPoll),
