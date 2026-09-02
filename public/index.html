@@ -41,7 +41,7 @@
           <span id="window-size-label">窗口</span>
         </button>
         <div id="window-size-popover" class="window-size-popover" hidden>
-          <div class="window-size-heading">远端 QQ 窗口</div>
+          <div class="window-size-heading">远端 QQ 窗口 <span id="window-state-label">读取中</span></div>
           <div class="window-size-fields">
             <label>宽<input id="window-width" type="number" min="320" max="7680" step="16" inputmode="numeric" aria-label="窗口宽度"></label>
             <span aria-hidden="true">×</span>
@@ -53,7 +53,16 @@
             <button type="button" data-window-size="1280x800">1280×800</button>
             <button type="button" data-window-size="1440x900">1440×900</button>
           </div>
-          <button id="window-size-apply" class="toolbar-button primary" type="button">应用到 QQ</button>
+          <div class="window-state-actions" aria-label="窗口状态">
+            <button type="button" data-window-state="normal">恢复</button>
+            <button type="button" data-window-state="maximized">最大化</button>
+            <button type="button" data-window-state="minimized">最小化</button>
+            <button type="button" data-window-state="fullscreen">全屏</button>
+          </div>
+          <div class="window-size-footer">
+            <button id="window-state-refresh" class="toolbar-button" type="button">刷新状态</button>
+            <button id="window-size-apply" class="toolbar-button primary" type="button">应用到 QQ</button>
+          </div>
         </div>
       </div>
       <span class="toolbar-divider" aria-hidden="true"></span>

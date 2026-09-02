@@ -72,6 +72,14 @@ export function parseClientMessage(raw, { maxTextBytes = 64 * 1024 } = {}) {
       if (width < 320 || width > 7680 || height < 240 || height > 4320) return null;
       return scoped(message, { type: 'resizeWindow', width, height });
     }
+    case 'getWindowState':
+      return scoped(message, { type: 'getWindowState' });
+    case 'setWindowState': {
+      const state = String(message.state || '');
+      return ['normal', 'maximized', 'minimized', 'fullscreen'].includes(state)
+        ? scoped(message, { type: 'setWindowState', state })
+        : null;
+    }
     case 'fileCommit': {
       const id = nodeId(message.nodeId);
       const tokens = Array.isArray(message.uploadTokens) ? message.uploadTokens.filter((token) => /^[A-Za-z0-9_-]{16,128}$/.test(String(token))).slice(0, 32).map(String) : [];

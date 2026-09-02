@@ -147,3 +147,11 @@ body:not([data-control="granted"]) #window-size { opacity: .42; }
   #window-size-label::after { content: "↔"; font-size: 14px; }
   #window-size { min-width: 30px; width: 30px; padding: 0; }
 }
+
+#window-state-label { float: right; color: rgba(255,255,255,.42); font-weight: 500; font-variant-numeric: tabular-nums; }
+.window-state-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin: 9px 0; }
+.window-state-actions button { height: 27px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: rgba(255,255,255,.035); color: rgba(255,255,255,.62); cursor: pointer; font: inherit; font-size: 9px; }
+.window-state-actions button:hover { background: rgba(255,255,255,.07); color: rgba(255,255,255,.9); }
+.window-state-actions button.active { border-color: rgba(110,168,255,.42); background: rgba(110,168,255,.12); color: #d7e5ff; }
+.window-size-footer { display: grid; grid-template-columns: .8fr 1.2fr; gap: 6px; }
+.window-size-footer .toolbar-button { width: 100%; }
