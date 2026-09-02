@@ -90,7 +90,7 @@ function runtimeResult(value) {
   if (value === null) return { result: { type: 'object', subtype: 'null', value: null } };
   const type = typeof value;
   if (type === 'bigint') return { result: { type: 'bigint', unserializableValue: String(value) + 'n' } };
-  if (type === 'number' && !Number.isFinite(value)) return { result: { type: 'number', unserializableValue: String(value) };
+  if (type === 'number' && !Number.isFinite(value)) return { result: { type: 'number', unserializableValue: String(value) } };
   return { result: { type, value } };
 }
 
