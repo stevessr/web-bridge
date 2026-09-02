@@ -110,6 +110,24 @@ export class MediaState {
     return this.data.jobs[key];
   }
 
+  async requeue(key, { resetAttempts = true } = {}) {
+    const previous = this.data.jobs[key];
+    if (!previous) throw new Error(`Unknown media job: ${key}`);
+    if (previous.status === 'running') throw new Error(`Cannot requeue running media job: ${key}`);
+    this.data.jobs[key] = {
+      ...previous,
+      status: 'discovered',
+      attempts: resetAttempts ? 0 : (previous.attempts || 0),
+      error: null,
+      nextRetryAt: null,
+      failedAt: null,
+      startedAt: null,
+      updatedAt: nowIso()
+    };
+    await this.save();
+    return this.data.jobs[key];
+  }
+
   async save() {
     this.data.updatedAt = nowIso();
     await writeJsonAtomic(this.file, this.data);
