@@ -16,6 +16,8 @@
     "media:once": "node src/media/cli.mjs once",
     "media:doctor": "node src/media/cli.mjs doctor",
     "media:state": "node src/media/cli.mjs state",
+    "media:web": "node src/media/web.mjs",
+    "media:web:dev": "node --watch src/media/web.mjs",
     "test": "node --test",
     "doctor": "node src/doctor.mjs"
   },
