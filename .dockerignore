@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+*.log
+coverage
+.cache
+qq-data
