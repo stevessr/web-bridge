@@ -15,6 +15,7 @@ use tokio::{
     sync::{Mutex, mpsc::UnboundedReceiver},
     task::AbortHandle,
 };
+use tracing::warn;
 use web_bridge_protocol::{
     AccountRef, AccountSnapshot, AccountStatus, AuthChallenge, ConversationKind, ConversationRef,
     MessagePart, Network, RouteMode, ServerFrame, UnifiedMessage,
@@ -429,6 +430,9 @@ async fn start_updates(
                         }],
                         raw: None,
                     };
+                    if let Err(error) = task_state.storage.store_message(&message) {
+                        warn!(account = %task_account.id, %error, "failed to persist Telegram message");
+                    }
                     let _ = task_state.events.send(ServerFrame::Message { message });
                 }
                 Ok(_) => {}
