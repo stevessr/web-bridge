@@ -21,7 +21,11 @@ use web_bridge_protocol::{
     MessagePart, Network, RouteMode, ServerFrame, UnifiedMessage,
 };
 
-use crate::{state::CoreState, telegram_session::RusqliteSession};
+use crate::{
+    private_fs::restrict_dir,
+    state::CoreState,
+    telegram_session::RusqliteSession,
+};
 
 pub struct TelegramHandle {
     pub client: Client,
@@ -300,6 +304,7 @@ async fn build_handle(
     tokio::fs::create_dir_all(&account_dir)
         .await
         .context("create Telegram account directory")?;
+    restrict_dir(&account_dir).context("restrict Telegram account directory permissions")?;
     let session = Arc::new(
         RusqliteSession::open(&account_dir.join("telegram.session"))
             .context("open Telegram session")?,
