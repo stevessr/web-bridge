@@ -417,9 +417,7 @@ mod tests {
         for network in [Network::Matrix, Network::Telegram, Network::Qq] {
             let (role, route) = match network {
                 Network::Qq => (RuntimeRole::Server, RouteMode::Server),
-                Network::Matrix | Network::Telegram => {
-                    (RuntimeRole::Client, RouteMode::Client)
-                }
+                Network::Matrix | Network::Telegram => (RuntimeRole::Client, RouteMode::Client),
             };
             let root = std::env::temp_dir().join(format!(
                 "web-bridge-account-lifecycle-{}-{}",
@@ -441,10 +439,7 @@ mod tests {
                 network,
                 id: "account-a".into(),
             };
-            state
-                .accounts
-                .upsert(account.clone(), None, route)
-                .unwrap();
+            state.accounts.upsert(account.clone(), None, route).unwrap();
 
             let provider_sentinel = if network == Network::Qq {
                 None

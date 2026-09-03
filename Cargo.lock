@@ -5198,12 +5198,14 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "serde",
  "serde_json",
  "tokio",
  "tower-http",
  "tracing",
  "tracing-subscriber",
  "web-bridge-core",
+ "web-bridge-protocol",
 ]
 
 [[package]]

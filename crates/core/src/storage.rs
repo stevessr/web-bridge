@@ -498,12 +498,7 @@ mod tests {
 
         store.remove_account(&account_a).unwrap();
 
-        assert!(
-            store
-                .list_conversations(&account_a, 50)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(store.list_conversations(&account_a, 50).unwrap().is_empty());
         assert!(
             store
                 .list_messages(&account_a, &message_a.conversation, None, 50)
