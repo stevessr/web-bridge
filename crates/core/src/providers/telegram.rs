@@ -859,7 +859,10 @@ mod tests {
 
     #[test]
     fn telegram_utf16_slice_rejects_invalid_entity_boundaries() {
-        assert_eq!(telegram_utf16_slice("👋 @alice", 3, 6).as_deref(), Some("@alice"));
+        assert_eq!(
+            telegram_utf16_slice("👋 @alice", 3, 6).as_deref(),
+            Some("@alice")
+        );
         assert!(telegram_utf16_slice("👋 @alice", -1, 2).is_none());
         assert!(telegram_utf16_slice("👋 @alice", 1, 1).is_none());
     }
