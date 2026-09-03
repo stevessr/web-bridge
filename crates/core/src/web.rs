@@ -18,7 +18,11 @@ use web_bridge_protocol::{
     AccountRef, AccountStatus, ClientFrame, Network, PROTOCOL_VERSION, RouteMode, ServerFrame,
 };
 
-use crate::{commands, napcat, state::CoreState};
+use crate::{
+    auth::{ClientPolicy, resolve_client_policy},
+    commands, napcat,
+    state::CoreState,
+};
 
 pub fn router(state: Arc<CoreState>) -> Router {
     Router::new()
@@ -43,13 +47,20 @@ async fn client_upgrade(
     State(state): State<Arc<CoreState>>,
     headers: HeaderMap,
 ) -> Response {
-    if !bearer_matches(&headers, &state.config.client_token) {
+    let Some(token) = bearer_token(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
+    let Some(policy) = resolve_client_policy(
+        token,
+        &state.config.client_token,
+        &state.config.client_credentials,
+    ) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     if !client_origin_allowed(&headers, &state.config.client_allowed_origins) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.on_upgrade(move |socket| client_socket(socket, state))
+    ws.on_upgrade(move |socket| client_socket(socket, state, policy))
 }
 
 async fn napcat_upgrade(
@@ -57,9 +68,6 @@ async fn napcat_upgrade(
     State(state): State<Arc<CoreState>>,
     headers: HeaderMap,
 ) -> Response {
-    if !bearer_matches(&headers, &state.config.napcat_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
     let self_id = match headers
         .get("x-self-id")
         .and_then(|value| value.to_str().ok())
@@ -67,12 +75,24 @@ async fn napcat_upgrade(
         Some(value) if !value.is_empty() => value.to_owned(),
         _ => return (StatusCode::BAD_REQUEST, "missing X-Self-ID").into_response(),
     };
+    let expected = if state.config.napcat_tokens.is_empty() {
+        Some(state.config.napcat_token.as_str())
+    } else {
+        state.config.napcat_tokens.get(&self_id).map(String::as_str)
+    };
+    let Some(expected) = expected else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !bearer_matches(&headers, expected) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     ws.on_upgrade(move |socket| napcat_socket(socket, state, self_id))
 }
 
-async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
+async fn client_socket(socket: WebSocket, state: Arc<CoreState>, policy: ClientPolicy) {
     let (mut sink, mut stream) = socket.split();
     let mut events = state.events.subscribe();
+    let mut session_device = None;
 
     if send_frame(
         &mut sink,
@@ -86,6 +106,7 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
         return;
     }
 
+    info!(principal = policy.principal(), "client websocket connected");
     loop {
         tokio::select! {
             incoming = stream.next() => {
@@ -93,7 +114,12 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
                 let Message::Text(text) = message else { continue };
                 match serde_json::from_str::<ClientFrame>(&text) {
                     Ok(frame) => {
-                        for response in handle_client_frame(frame, &state).await {
+                        for response in handle_client_frame(
+                            frame,
+                            &state,
+                            &policy,
+                            &mut session_device,
+                        ).await {
                             if send_frame(&mut sink, &response).await.is_err() {
                                 return;
                             }
@@ -113,18 +139,29 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>) {
             }
             outbound = events.recv() => {
                 match outbound {
-                    Ok(frame) => if send_frame(&mut sink, &frame).await.is_err() { break; },
+                    Ok(frame) => {
+                        if let Some(frame) = policy.filter_frame(frame)
+                            && send_frame(&mut sink, &frame).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => break,
                 }
             }
         }
     }
+    info!(principal = policy.principal(), "client websocket disconnected");
 }
 
-async fn handle_client_frame(frame: ClientFrame, state: &Arc<CoreState>) -> Vec<ServerFrame> {
+async fn handle_client_frame(
+    frame: ClientFrame,
+    state: &Arc<CoreState>,
+    policy: &ClientPolicy,
+    session_device: &mut Option<String>,
+) -> Vec<ServerFrame> {
     match frame {
-        ClientFrame::Ping { nonce } => vec![ServerFrame::Pong { nonce }],
         ClientFrame::Hello { protocol, .. } if protocol != PROTOCOL_VERSION => {
             vec![ServerFrame::Error {
                 request_id: None,
@@ -132,11 +169,47 @@ async fn handle_client_frame(frame: ClientFrame, state: &Arc<CoreState>) -> Vec<
                 message: format!("server protocol is {PROTOCOL_VERSION}"),
             }]
         }
-        ClientFrame::Hello { .. } => vec![],
+        ClientFrame::Hello { device_id, .. } => {
+            if let Some(bound) = session_device.as_deref()
+                && bound != device_id
+            {
+                return vec![session_error(
+                    "device_mismatch",
+                    "this websocket is already bound to a different device_id",
+                )];
+            }
+            if !policy.allows_device(&device_id) {
+                return vec![session_error(
+                    "device_forbidden",
+                    "this credential is not allowed for the requested device_id",
+                )];
+            }
+            *session_device = Some(device_id);
+            vec![]
+        }
+        _ if session_device.is_none() => vec![session_error(
+            "hello_required",
+            "send a valid Hello frame before using the websocket",
+        )],
+        ClientFrame::Ping { nonce } => vec![ServerFrame::Pong { nonce }],
         ClientFrame::Command {
             request_id,
             command,
-        } => commands::execute(request_id, command, state).await,
+        } => {
+            if !policy.allows_command(&command) {
+                return vec![ServerFrame::Error {
+                    request_id: Some(request_id),
+                    code: "forbidden".into(),
+                    message: "this credential is not allowed to execute the requested command"
+                        .into(),
+                }];
+            }
+            commands::execute(request_id, command, state)
+                .await
+                .into_iter()
+                .filter_map(|frame| policy.filter_frame(frame))
+                .collect()
+        }
     }
 }
 
@@ -230,15 +303,15 @@ where
     sink.send(Message::Text(text.into())).await.map_err(|_| ())
 }
 
-fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
-    if expected.is_empty() {
-        return true;
-    }
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| token == expected)
+}
+
+fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
+    !expected.is_empty() && bearer_token(headers).is_some_and(|token| token == expected)
 }
 
 fn client_origin_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
@@ -251,9 +324,19 @@ fn client_origin_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> boo
     allowed_origins.iter().any(|allowed| allowed == origin)
 }
 
+fn session_error(code: &str, message: &str) -> ServerFrame {
+    ServerFrame::Error {
+        request_id: None,
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{accounts::RuntimeRole, auth::ClientCredential, state::CoreConfig};
+    use web_bridge_protocol::{Command, Network};
 
     #[test]
     fn bearer_auth_requires_exact_token() {
@@ -277,5 +360,70 @@ mod tests {
         headers.insert(ORIGIN, "https://evil.example".parse().unwrap());
         assert!(!client_origin_allowed(&headers, &allowed));
         assert!(!client_origin_allowed(&headers, &[]));
+    }
+
+    #[tokio::test]
+    async fn commands_require_hello_and_respect_read_only_acl() {
+        let state = Arc::new(CoreState::new(RuntimeRole::Server, CoreConfig::default()));
+        let credential = ClientCredential {
+            token: "reader".into(),
+            principal: "reader".into(),
+            devices: vec!["device-a".into()],
+            networks: vec![Network::Matrix],
+            read_only: true,
+        };
+        let policy = resolve_client_policy("reader", "legacy", &[credential]).unwrap();
+        let mut device = None;
+
+        let before_hello = handle_client_frame(
+            ClientFrame::Command {
+                request_id: uuid::Uuid::new_v4(),
+                command: Command::ListAccounts,
+            },
+            &state,
+            &policy,
+            &mut device,
+        )
+        .await;
+        assert!(matches!(
+            before_hello.as_slice(),
+            [ServerFrame::Error { code, .. }] if code == "hello_required"
+        ));
+
+        assert!(
+            handle_client_frame(
+                ClientFrame::Hello {
+                    protocol: PROTOCOL_VERSION,
+                    device_id: "device-a".into(),
+                },
+                &state,
+                &policy,
+                &mut device,
+            )
+            .await
+            .is_empty()
+        );
+
+        let forbidden = handle_client_frame(
+            ClientFrame::Command {
+                request_id: uuid::Uuid::new_v4(),
+                command: Command::RegisterAccount {
+                    account: AccountRef {
+                        network: Network::Matrix,
+                        id: "matrix-a".into(),
+                    },
+                    display_name: None,
+                    route: RouteMode::Server,
+                },
+            },
+            &state,
+            &policy,
+            &mut device,
+        )
+        .await;
+        assert!(matches!(
+            forbidden.as_slice(),
+            [ServerFrame::Error { code, .. }] if code == "forbidden"
+        ));
     }
 }

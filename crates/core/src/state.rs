@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -7,16 +7,19 @@ use web_bridge_protocol::{AccountRef, ServerFrame};
 
 use crate::{
     accounts::{AccountRegistry, RuntimeRole},
+    auth::ClientCredential,
     private_fs::{restrict_dir, restrict_file},
     providers::{matrix::MatrixHandle, telegram::TelegramHandle},
     remote::RemoteBridge,
     storage::MessageStore,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CoreConfig {
     pub client_token: String,
+    pub client_credentials: Vec<ClientCredential>,
     pub napcat_token: String,
+    pub napcat_tokens: HashMap<String, String>,
     pub client_allowed_origins: Vec<String>,
     pub data_dir: PathBuf,
 }
@@ -25,7 +28,9 @@ impl Default for CoreConfig {
     fn default() -> Self {
         Self {
             client_token: "dev-client-token".into(),
+            client_credentials: Vec::new(),
             napcat_token: "dev-napcat-token".into(),
+            napcat_tokens: HashMap::new(),
             client_allowed_origins: Vec::new(),
             data_dir: PathBuf::from("data"),
         }

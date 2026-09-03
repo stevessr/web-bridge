@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod accounts;
+pub mod auth;
 pub mod commands;
 pub mod napcat;
 mod private_fs;
@@ -14,6 +15,7 @@ pub mod web;
 use std::sync::Arc;
 
 pub use accounts::{AccountRegistry, RuntimeRole};
+pub use auth::ClientCredential;
 pub use state::{CoreConfig, CoreState};
 use uuid::Uuid;
 use web_bridge_protocol::{AccountRef, AccountSnapshot, Command, RouteMode};
