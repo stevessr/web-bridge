@@ -9,6 +9,8 @@ on:
       - crates/core/Cargo.toml
       - crates/core/src/**
       - crates/protocol/**
+      - crates/server/Cargo.toml
+      - crates/server/src/**
       - client/flutter_rust_bridge.yaml
       - client/pubspec.yaml
       - client/rust/Cargo.toml

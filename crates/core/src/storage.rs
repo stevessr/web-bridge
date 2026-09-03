@@ -305,6 +305,29 @@ impl MessageStore {
             )
             .optional()
     }
+
+    pub fn remove_account(&self, account: &AccountRef) -> rusqlite::Result<()> {
+        let mut connection = self.db.lock().map_err(|_| lock_error())?;
+        let transaction = connection.transaction()?;
+        let network = network_name(account.network);
+        transaction.execute(
+            "DELETE FROM message_parts WHERE network = ?1 AND account_id = ?2",
+            params![network, &account.id],
+        )?;
+        transaction.execute(
+            "DELETE FROM messages WHERE network = ?1 AND account_id = ?2",
+            params![network, &account.id],
+        )?;
+        transaction.execute(
+            "DELETE FROM conversations WHERE network = ?1 AND account_id = ?2",
+            params![network, &account.id],
+        )?;
+        transaction.execute(
+            "DELETE FROM account_cursors WHERE network = ?1 AND account_id = ?2",
+            params![network, &account.id],
+        )?;
+        transaction.commit()
+    }
 }
 
 fn read_message_row(row: &Row<'_>) -> rusqlite::Result<StoredMessageRow> {
@@ -452,5 +475,51 @@ mod tests {
             .unwrap();
         assert_eq!(message_count, 2);
         assert_eq!(part_count, 4);
+    }
+
+    #[test]
+    fn remove_account_purges_only_that_account_history_and_cursor() {
+        let store = MessageStore::memory().unwrap();
+        let account_a = AccountRef {
+            network: Network::Matrix,
+            id: "account-a".into(),
+        };
+        let account_b = AccountRef {
+            network: Network::Matrix,
+            id: "account-b".into(),
+        };
+        let timestamp = Utc.with_ymd_and_hms(2026, 9, 3, 1, 0, 0).unwrap();
+        let message_a = message(&account_a, "$a", timestamp);
+        let message_b = message(&account_b, "$b", timestamp);
+        store.store_message(&message_a).unwrap();
+        store.store_message(&message_b).unwrap();
+        store.set_cursor(&account_a, "sync", "cursor-a").unwrap();
+        store.set_cursor(&account_b, "sync", "cursor-b").unwrap();
+
+        store.remove_account(&account_a).unwrap();
+
+        assert!(
+            store
+                .list_conversations(&account_a, 50)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_messages(&account_a, &message_a.conversation, None, 50)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.cursor(&account_a, "sync").unwrap(), None);
+        assert_eq!(
+            store
+                .list_messages(&account_b, &message_b.conversation, None, 50)
+                .unwrap(),
+            vec![message_b]
+        );
+        assert_eq!(
+            store.cursor(&account_b, "sync").unwrap().as_deref(),
+            Some("cursor-b")
+        );
     }
 }

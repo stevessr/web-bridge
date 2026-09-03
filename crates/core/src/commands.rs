@@ -49,6 +49,20 @@ pub async fn execute(
                     error,
                 )];
             }
+            if let Err(error) = state.media.remove_account(&account).await {
+                return vec![provider_error(
+                    request_id,
+                    "account_media_purge_failed",
+                    error,
+                )];
+            }
+            if let Err(error) = state.storage.remove_account(&account) {
+                return vec![provider_error(
+                    request_id,
+                    "account_history_purge_failed",
+                    error.into(),
+                )];
+            }
             if state.accounts.remove(&account).is_some() {
                 let _ = state.events.send(ServerFrame::AccountRemoved { account });
                 vec![ServerFrame::Ack { request_id }]
@@ -399,19 +413,25 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn disconnect_preserves_provider_data_but_remove_purges_it() {
-        for network in [Network::Matrix, Network::Telegram] {
+    async fn disconnect_preserves_and_remove_purges_account_data_for_all_networks() {
+        for network in [Network::Matrix, Network::Telegram, Network::Qq] {
+            let (role, route) = match network {
+                Network::Qq => (RuntimeRole::Server, RouteMode::Server),
+                Network::Matrix | Network::Telegram => {
+                    (RuntimeRole::Client, RouteMode::Client)
+                }
+            };
             let root = std::env::temp_dir().join(format!(
-                "web-bridge-remove-account-{}-{}",
+                "web-bridge-account-lifecycle-{}-{}",
                 match network {
                     Network::Matrix => "matrix",
                     Network::Telegram => "telegram",
-                    Network::Qq => unreachable!(),
+                    Network::Qq => "qq",
                 },
                 Uuid::new_v4()
             ));
             let state = Arc::new(CoreState::new(
-                RuntimeRole::Client,
+                role,
                 CoreConfig {
                     data_dir: root.clone(),
                     ..CoreConfig::default()
@@ -423,12 +443,55 @@ mod tests {
             };
             state
                 .accounts
-                .upsert(account.clone(), None, RouteMode::Client)
+                .upsert(account.clone(), None, route)
                 .unwrap();
-            let account_dir = state.account_data_dir(&account);
-            tokio::fs::create_dir_all(&account_dir).await.unwrap();
-            let sentinel = account_dir.join("session-sentinel");
-            tokio::fs::write(&sentinel, b"session").await.unwrap();
+
+            let provider_sentinel = if network == Network::Qq {
+                None
+            } else {
+                let account_dir = state.account_data_dir(&account);
+                tokio::fs::create_dir_all(&account_dir).await.unwrap();
+                let sentinel = account_dir.join("session-sentinel");
+                tokio::fs::write(&sentinel, b"session").await.unwrap();
+                Some(sentinel)
+            };
+
+            let media = state
+                .media
+                .store(
+                    &account,
+                    "attachment.bin".into(),
+                    "application/octet-stream".into(),
+                    b"media",
+                )
+                .await
+                .unwrap();
+            let conversation = ConversationRef {
+                kind: match network {
+                    Network::Matrix => ConversationKind::Room,
+                    Network::Telegram | Network::Qq => ConversationKind::Private,
+                },
+                id: "conversation-a".into(),
+            };
+            state
+                .storage
+                .store_message(&UnifiedMessage {
+                    id: "message-a".into(),
+                    account: account.clone(),
+                    conversation: conversation.clone(),
+                    sender_id: "sender-a".into(),
+                    sender_name: None,
+                    timestamp: Utc.with_ymd_and_hms(2026, 9, 3, 1, 0, 0).unwrap(),
+                    parts: vec![MessagePart::Text {
+                        text: "stored".into(),
+                    }],
+                    raw: None,
+                })
+                .unwrap();
+            state
+                .storage
+                .set_cursor(&account, "sync", "cursor-a")
+                .unwrap();
 
             let disconnect = execute(
                 Uuid::new_v4(),
@@ -439,7 +502,25 @@ mod tests {
             )
             .await;
             assert!(matches!(disconnect.as_slice(), [ServerFrame::Ack { .. }]));
-            assert!(sentinel.exists());
+            if let Some(sentinel) = &provider_sentinel {
+                assert!(sentinel.exists());
+            }
+            assert_eq!(
+                state.media.load(&account, &media.id).await.unwrap().bytes,
+                b"media"
+            );
+            assert_eq!(
+                state
+                    .storage
+                    .list_messages(&account, &conversation, None, 50)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                state.storage.cursor(&account, "sync").unwrap().as_deref(),
+                Some("cursor-a")
+            );
             assert!(state.accounts.get(&account).is_some());
 
             let remove = execute(
@@ -451,7 +532,25 @@ mod tests {
             )
             .await;
             assert!(matches!(remove.as_slice(), [ServerFrame::Ack { .. }]));
-            assert!(!account_dir.exists());
+            if let Some(sentinel) = &provider_sentinel {
+                assert!(!sentinel.exists());
+            }
+            assert!(state.media.load(&account, &media.id).await.is_err());
+            assert!(
+                state
+                    .storage
+                    .list_conversations(&account, 50)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                state
+                    .storage
+                    .list_messages(&account, &conversation, None, 50)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(state.storage.cursor(&account, "sync").unwrap(), None);
             assert!(state.accounts.get(&account).is_none());
 
             let _ = tokio::fs::remove_dir_all(root).await;
