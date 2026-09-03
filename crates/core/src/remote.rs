@@ -566,14 +566,13 @@ mod tests {
             request.headers().get(AUTHORIZATION).unwrap(),
             "Bearer do-not-put-me-in-the-url"
         );
+        assert!(request.headers().get(AUTHORIZATION).unwrap().is_sensitive());
         assert!(
-            request
-                .headers()
-                .get(AUTHORIZATION)
-                .unwrap()
-                .is_sensitive()
+            !request
+                .uri()
+                .to_string()
+                .contains("do-not-put-me-in-the-url")
         );
-        assert!(!request.uri().to_string().contains("do-not-put-me-in-the-url"));
     }
 
     #[test]
