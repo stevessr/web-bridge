@@ -394,7 +394,9 @@ mod tests {
     use crate::{accounts::RuntimeRole, state::CoreConfig};
     use chrono::{TimeZone, Utc};
     use uuid::Uuid;
-    use web_bridge_protocol::{ConversationKind, ConversationRef, MessagePart, RouteMode, UnifiedMessage};
+    use web_bridge_protocol::{
+        ConversationKind, ConversationRef, MessagePart, RouteMode, UnifiedMessage,
+    };
 
     #[tokio::test]
     async fn disconnect_preserves_provider_data_but_remove_purges_it() {
