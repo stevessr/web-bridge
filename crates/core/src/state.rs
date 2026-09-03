@@ -8,6 +8,7 @@ use web_bridge_protocol::{AccountRef, ServerFrame};
 use crate::{
     accounts::{AccountRegistry, RuntimeRole},
     auth::ClientCredential,
+    media::MediaStore,
     private_fs::{restrict_dir, restrict_file},
     providers::{matrix::MatrixHandle, telegram::TelegramHandle},
     remote::RemoteBridge,
@@ -48,6 +49,7 @@ pub struct CoreState {
     pub events: broadcast::Sender<ServerFrame>,
     pub accounts: AccountRegistry,
     pub storage: MessageStore,
+    pub media: MediaStore,
     /// QQ account -> reverse OneBot websocket writer.
     pub qq: DashMap<AccountRef, mpsc::UnboundedSender<String>>,
     /// OneBot echo -> command waiting for the actual NapCat action response.
@@ -63,6 +65,7 @@ pub struct CoreState {
 impl CoreState {
     pub fn new(role: RuntimeRole, config: CoreConfig) -> Self {
         let (events, _) = broadcast::channel(4096);
+        let media = MediaStore::new(config.data_dir.join("media"));
         let (accounts, storage) = if cfg!(test) {
             (
                 AccountRegistry::default(),
@@ -111,6 +114,7 @@ impl CoreState {
             events,
             accounts,
             storage,
+            media,
             qq: DashMap::new(),
             qq_pending: DashMap::new(),
             matrix: DashMap::new(),
