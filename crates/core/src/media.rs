@@ -116,7 +116,9 @@ impl MediaStore {
         match tokio::fs::remove_dir_all(&path).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).with_context(|| format!("remove media directory {}", path.display())),
+            Err(error) => {
+                Err(error).with_context(|| format!("remove media directory {}", path.display()))
+            }
         }
     }
 
