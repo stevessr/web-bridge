@@ -53,7 +53,7 @@ class _HomePageState extends State<HomePage> {
 
   StreamSubscription<CoreFrame>? subscription;
   String status = 'Rust core ready';
-  bool serverConnected = false;
+  bool serverSessionActive = false;
 
   @override
   void initState() {
@@ -72,7 +72,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       setState(() {
-        serverConnected = true;
+        serverSessionActive = true;
         status =
             'Server connected · protocol v${widget.bridge.protocolVersion}';
       });
@@ -80,7 +80,7 @@ class _HomePageState extends State<HomePage> {
     } catch (error) {
       if (mounted) {
         setState(() {
-          serverConnected = false;
+          serverSessionActive = false;
           status = 'Connect failed: $error';
         });
       }
@@ -91,7 +91,7 @@ class _HomePageState extends State<HomePage> {
     try {
       widget.bridge.disconnect();
       setState(() {
-        serverConnected = false;
+        serverSessionActive = false;
         status = 'Server disconnected';
       });
     } catch (error) {
@@ -103,7 +103,7 @@ class _HomePageState extends State<HomePage> {
     switch (frame['type']) {
       case 'ready':
         status = 'Server ready · protocol v${frame['protocol']}';
-        serverConnected = true;
+        serverSessionActive = true;
       case 'accounts':
       case 'account_changed':
       case 'account_removed':
@@ -115,9 +115,10 @@ class _HomePageState extends State<HomePage> {
       case 'ack':
         status = 'Request ${frame['request_id']} completed';
       case 'error':
-        status = '${frame['code']}: ${frame['message']}';
-        if (frame['code'] == 'remote_disconnected') {
-          serverConnected = false;
+        final code = frame['code'];
+        status = '$code: ${frame['message']}';
+        if (code == 'remote_disconnected' || code == 'remote_reconnect_failed') {
+          serverSessionActive = true;
         }
       case 'pong':
         status = 'Server pong: ${frame['nonce']}';
@@ -542,14 +543,14 @@ class _HomePageState extends State<HomePage> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: serverConnected ? null : connect,
+                  onPressed: serverSessionActive ? null : connect,
                   icon: const Icon(Icons.cloud_done_outlined),
                   label: const Text('Connect server'),
                 ),
               ),
               const SizedBox(width: 10),
               OutlinedButton.icon(
-                onPressed: serverConnected ? disconnect : null,
+                onPressed: serverSessionActive ? disconnect : null,
                 icon: const Icon(Icons.cloud_off_outlined),
                 label: const Text('Disconnect'),
               ),
