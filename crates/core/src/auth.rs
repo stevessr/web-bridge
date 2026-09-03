@@ -45,6 +45,10 @@ impl ClientPolicy {
         self.networks.is_empty() || self.networks.contains(&network)
     }
 
+    pub fn allows_write(&self) -> bool {
+        !self.read_only
+    }
+
     pub fn allows_command(&self, command: &Command) -> bool {
         if self.read_only && !command_is_read_only(command) {
             return false;
@@ -167,6 +171,7 @@ mod tests {
         assert_eq!(policy.principal(), "reader");
         assert!(policy.allows_device("phone"));
         assert!(!policy.allows_device("laptop"));
+        assert!(!policy.allows_write());
         assert!(policy.allows_command(&Command::ListMessages {
             account: account(Network::Matrix),
             conversation: web_bridge_protocol::ConversationRef {
@@ -212,6 +217,7 @@ mod tests {
     fn legacy_token_remains_full_admin_when_structured_mode_is_off() {
         let policy = resolve_client_policy("legacy", "legacy", &[]).unwrap();
         assert!(policy.allows_device("any-device"));
+        assert!(policy.allows_write());
         assert!(policy.allows_command(&Command::RemoveAccount {
             account: account(Network::Qq),
         }));
