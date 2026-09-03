@@ -7,6 +7,7 @@ use web_bridge_protocol::{AccountRef, ServerFrame};
 
 use crate::{
     accounts::{AccountRegistry, RuntimeRole},
+    private_fs::{restrict_dir, restrict_file},
     providers::{matrix::MatrixHandle, telegram::TelegramHandle},
     remote::RemoteBridge,
     storage::MessageStore,
@@ -64,15 +65,32 @@ impl CoreState {
             if let Err(error) = std::fs::create_dir_all(&config.data_dir) {
                 warn!(%error, "failed to create core data directory");
             }
-            let accounts = match AccountRegistry::open(&config.data_dir.join("accounts.sqlite")) {
-                Ok(registry) => registry,
+            if let Err(error) = restrict_dir(&config.data_dir) {
+                warn!(%error, path = %config.data_dir.display(), "failed to restrict core data directory permissions");
+            }
+
+            let accounts_path = config.data_dir.join("accounts.sqlite");
+            let accounts = match AccountRegistry::open(&accounts_path) {
+                Ok(registry) => {
+                    if let Err(error) = restrict_file(&accounts_path) {
+                        warn!(%error, path = %accounts_path.display(), "failed to restrict account registry permissions");
+                    }
+                    registry
+                }
                 Err(error) => {
                     warn!(%error, "failed to open persistent account registry; using memory only");
                     AccountRegistry::default()
                 }
             };
-            let storage = match MessageStore::open(&config.data_dir.join("messages.sqlite")) {
-                Ok(storage) => storage,
+
+            let messages_path = config.data_dir.join("messages.sqlite");
+            let storage = match MessageStore::open(&messages_path) {
+                Ok(storage) => {
+                    if let Err(error) = restrict_file(&messages_path) {
+                        warn!(%error, path = %messages_path.display(), "failed to restrict message store permissions");
+                    }
+                    storage
+                }
                 Err(error) => {
                     warn!(%error, "failed to open persistent message store; using memory only");
                     MessageStore::memory().expect("open fallback in-memory message store")
