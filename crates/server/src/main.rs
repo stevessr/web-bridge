@@ -171,11 +171,7 @@ mod tests {
         headers.insert(DEVICE_HEADER, "device-a".parse().unwrap());
         normalize_device_headers(&mut headers).unwrap();
         assert_eq!(
-            headers
-                .get(LEGACY_DEVICE_HEADER)
-                .unwrap()
-                .to_str()
-                .unwrap(),
+            headers.get(LEGACY_DEVICE_HEADER).unwrap().to_str().unwrap(),
             "device-a"
         );
     }
@@ -197,11 +193,7 @@ mod tests {
         headers.insert(LEGACY_DEVICE_HEADER, "legacy-device".parse().unwrap());
         normalize_device_headers(&mut headers).unwrap();
         assert_eq!(
-            headers
-                .get(LEGACY_DEVICE_HEADER)
-                .unwrap()
-                .to_str()
-                .unwrap(),
+            headers.get(LEGACY_DEVICE_HEADER).unwrap().to_str().unwrap(),
             "legacy-device"
         );
     }
