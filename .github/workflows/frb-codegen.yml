@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: frb-codegen-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   generate:
     if: github.actor != 'github-actions[bot]'
@@ -60,7 +64,12 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock crates/core/Cargo.toml crates/core/src client/pubspec.lock client/lib/src/rust client/rust/src client/rust/Cargo.toml client/pubspec.yaml client/flutter_rust_bridge.yaml
+          git add Cargo.toml Cargo.lock clippy.toml \
+            crates/core/Cargo.toml crates/core/src \
+            crates/protocol/Cargo.toml crates/protocol/src \
+            crates/server/Cargo.toml crates/server/src \
+            client/pubspec.lock client/lib/src/rust client/rust/src \
+            client/rust/Cargo.toml client/pubspec.yaml client/flutter_rust_bridge.yaml
           git commit -m "chore(client): regenerate FRB bindings and lock dependencies"
           git pull --rebase origin feat/napcat-rust-unified-v2
           git push origin HEAD:feat/napcat-rust-unified-v2
