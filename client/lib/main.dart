@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'history_page.dart';
 import 'models/account_route.dart';
 import 'services/rust_core_bridge.dart';
 
@@ -647,7 +648,24 @@ class _HomePageState extends State<HomePage> {
             ),
         ],
       ),
-      trailing: _statusIcon(account.status),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => HistoryPage(
+                  bridge: widget.bridge,
+                  account: account,
+                ),
+              ),
+            ),
+            tooltip: 'Stored history',
+            icon: const Icon(Icons.history),
+          ),
+          _statusIcon(account.status),
+        ],
+      ),
     );
   }
 
