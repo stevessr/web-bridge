@@ -689,7 +689,11 @@ fn separate_text(body: &mut String) {
 }
 
 fn telegram_image_name(name: &str, content_type: &str) -> String {
-    let name = if name.trim().is_empty() { "image" } else { name };
+    let name = if name.trim().is_empty() {
+        "image"
+    } else {
+        name
+    };
     if name.rsplit_once('.').is_some() {
         return name.to_owned();
     }
