@@ -23,6 +23,8 @@ jobs:
   generate:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    outputs:
+      generated_sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -49,9 +51,11 @@ jobs:
       - name: Format Rust
         run: cargo fmt --all
       - name: Commit generated bindings
+        id: commit
         run: |
           if git diff --quiet && [ -z "$(git status --porcelain --untracked-files=all)" ]; then
             echo "Bindings are already up to date."
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -60,3 +64,10 @@ jobs:
           git commit -m "chore(client): regenerate FRB bindings and lock dependencies"
           git pull --rebase origin feat/napcat-rust-unified-v2
           git push origin HEAD:feat/napcat-rust-unified-v2
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  generated-ci:
+    needs: generate
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.generate.outputs.generated_sha }}
