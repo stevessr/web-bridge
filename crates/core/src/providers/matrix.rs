@@ -4,14 +4,23 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use matrix_sdk::{
     Client, Room,
+    attachment::AttachmentConfig,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
+    room::reply::{EnforceThread, Reply},
     ruma::{
-        RoomId,
-        events::room::message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+        EventId, OwnedUserId, RoomId, UserId,
+        events::{
+            Mentions,
+            room::message::{
+                AddMentions, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
+                RoomMessageEventContentWithoutRelation, TextMessageEventContent,
+            },
+        },
     },
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::task::AbortHandle;
 use tracing::warn;
 use web_bridge_protocol::{
@@ -35,6 +44,19 @@ pub struct MatrixHandle {
 struct StoredMatrixSession {
     homeserver: String,
     session: MatrixSession,
+}
+
+struct OutgoingMatrixParts {
+    body: String,
+    html_body: String,
+    mentions: Vec<OwnedUserId>,
+    reply: Option<matrix_sdk::ruma::OwnedEventId>,
+    attachment: Option<OutgoingAttachment>,
+}
+
+enum OutgoingAttachment {
+    Image { reference: String },
+    File { reference: String, name: String },
 }
 
 pub async fn login_password(
@@ -162,10 +184,71 @@ pub async fn send_message(
         .client
         .get_room(&room_id)
         .context("Matrix room is not known to this account")?;
-    let body = text_body(parts)?;
-    room.send(RoomMessageEventContent::text_plain(body))
-        .await
-        .context("send Matrix message")?;
+    let outgoing = parse_outgoing_parts(parts)?;
+
+    if let Some(attachment) = outgoing.attachment {
+        let (reference, requested_name) = match attachment {
+            OutgoingAttachment::Image { reference } => (reference, None),
+            OutgoingAttachment::File { reference, name } => (reference, Some(name)),
+        };
+        let loaded = state
+            .media
+            .load_reference(account, &reference)
+            .await
+            .context("resolve Matrix attachment")?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "matrix_remote_attachment_url_unsupported: upload the attachment to MediaStore first"
+                )
+            })?;
+        let mime = loaded
+            .info
+            .content_type
+            .parse()
+            .context("invalid Matrix attachment MIME type")?;
+        let filename = requested_name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| loaded.info.name.clone());
+        let mentions = mentions(&outgoing.mentions);
+        let caption = if outgoing.body.is_empty() {
+            None
+        } else if outgoing.html_body == escape_html(&outgoing.body) {
+            Some(TextMessageEventContent::plain(outgoing.body))
+        } else {
+            Some(TextMessageEventContent::html(
+                outgoing.body,
+                outgoing.html_body,
+            ))
+        };
+        let config = AttachmentConfig::new()
+            .caption(caption)
+            .mentions(mentions)
+            .reply(outgoing.reply.map(matrix_reply));
+        room.send_attachment(filename, &mime, loaded.bytes, config)
+            .await
+            .context("send Matrix attachment")?;
+        return Ok(());
+    }
+
+    if outgoing.body.is_empty() {
+        bail!("message contains no text or attachment");
+    }
+    let mut content = if outgoing.html_body == escape_html(&outgoing.body) {
+        RoomMessageEventContentWithoutRelation::text_plain(outgoing.body)
+    } else {
+        RoomMessageEventContentWithoutRelation::text_html(outgoing.body, outgoing.html_body)
+    };
+    if let Some(mentions) = mentions(&outgoing.mentions) {
+        content = content.add_mentions(mentions);
+    }
+    let content = if let Some(reply) = outgoing.reply {
+        room.make_reply_event(content, matrix_reply(reply))
+            .await
+            .context("build Matrix reply relation")?
+    } else {
+        RoomMessageEventContent::from(content)
+    };
+    room.send(content).await.context("send Matrix message")?;
     Ok(())
 }
 
@@ -278,12 +361,13 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
         let account = account.clone();
         let state = state.clone();
         async move {
-            let body = event.content.body().to_owned();
+            let content = serde_json::to_value(&event.content).unwrap_or(Value::Null);
+            let parts = incoming_parts(&content);
             let raw = Some(serde_json::json!({
                 "event_id": event.event_id.to_string(),
                 "sender": event.sender.to_string(),
                 "room_id": room.room_id().to_string(),
-                "body": body,
+                "content": content,
             }));
             let message = UnifiedMessage {
                 id: event.event_id.to_string(),
@@ -295,7 +379,7 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
                 sender_id: event.sender.to_string(),
                 sender_name: None,
                 timestamp: Utc::now(),
-                parts: vec![MessagePart::Text { text: body }],
+                parts,
                 raw,
             };
             if let Err(error) = state.storage.store_message(&message) {
@@ -304,6 +388,173 @@ fn install_message_handler(client: &Client, account: AccountRef, state: Arc<Core
             let _ = state.events.send(ServerFrame::Message { message });
         }
     });
+}
+
+fn parse_outgoing_parts(parts: &[MessagePart]) -> Result<OutgoingMatrixParts> {
+    let mut body = String::new();
+    let mut html_body = String::new();
+    let mut user_ids = Vec::new();
+    let mut reply = None;
+    let mut attachment = None;
+
+    for part in parts {
+        match part {
+            MessagePart::Text { text } => {
+                body.push_str(text);
+                html_body.push_str(&escape_html(text));
+            }
+            MessagePart::Mention { id, display_name } => {
+                let user_id = UserId::parse(id.clone())
+                    .with_context(|| format!("invalid Matrix mention user id {id}"))?;
+                let label = display_name.as_deref().unwrap_or(id);
+                maybe_separate(&mut body, &mut html_body);
+                body.push_str(label);
+                html_body.push_str("<a href=\"https://matrix.to/#/");
+                html_body.push_str(&escape_html(id));
+                html_body.push_str("\">");
+                html_body.push_str(&escape_html(label));
+                html_body.push_str("</a>");
+                user_ids.push(user_id);
+            }
+            MessagePart::Reply { message_id } => {
+                if reply.is_some() {
+                    bail!("matrix_multiple_reply_parts_unsupported");
+                }
+                reply = Some(
+                    EventId::parse(message_id.clone())
+                        .with_context(|| format!("invalid Matrix reply event id {message_id}"))?,
+                );
+            }
+            MessagePart::Image { url, .. } => {
+                if attachment.is_some() {
+                    bail!("matrix_multiple_attachments_unsupported");
+                }
+                attachment = Some(OutgoingAttachment::Image {
+                    reference: url.clone(),
+                });
+            }
+            MessagePart::File { url, name } => {
+                if attachment.is_some() {
+                    bail!("matrix_multiple_attachments_unsupported");
+                }
+                attachment = Some(OutgoingAttachment::File {
+                    reference: url.clone(),
+                    name: name.clone(),
+                });
+            }
+            MessagePart::Unsupported { kind, .. } => {
+                bail!("matrix_unsupported_message_part: {kind}");
+            }
+        }
+    }
+
+    Ok(OutgoingMatrixParts {
+        body,
+        html_body,
+        mentions: user_ids,
+        reply,
+        attachment,
+    })
+}
+
+fn matrix_reply(event_id: matrix_sdk::ruma::OwnedEventId) -> Reply {
+    Reply {
+        event_id,
+        enforce_thread: EnforceThread::Unthreaded,
+        add_mentions: AddMentions::Yes,
+    }
+}
+
+fn mentions(user_ids: &[OwnedUserId]) -> Option<Mentions> {
+    (!user_ids.is_empty()).then(|| Mentions::with_user_ids(user_ids.iter().cloned()))
+}
+
+fn maybe_separate(body: &mut String, html: &mut String) {
+    if !body.is_empty() && !body.ends_with(char::is_whitespace) {
+        body.push(' ');
+        html.push(' ');
+    }
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn incoming_parts(content: &Value) -> Vec<MessagePart> {
+    let mut parts = Vec::new();
+    if let Some(reply_id) = content
+        .pointer("/m.relates_to/m.in_reply_to/event_id")
+        .and_then(Value::as_str)
+    {
+        parts.push(MessagePart::Reply {
+            message_id: reply_id.to_owned(),
+        });
+    }
+    if let Some(user_ids) = content
+        .pointer("/m.mentions/user_ids")
+        .and_then(Value::as_array)
+    {
+        for id in user_ids.iter().filter_map(Value::as_str) {
+            parts.push(MessagePart::Mention {
+                id: id.to_owned(),
+                display_name: None,
+            });
+        }
+    }
+
+    let kind = content
+        .get("msgtype")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = content
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "m.text" | "m.notice" | "m.emote" => {
+            if !body.is_empty() {
+                parts.push(MessagePart::Text {
+                    text: body.to_owned(),
+                });
+            }
+        }
+        "m.image" => {
+            if let Some(url) = content.get("url").and_then(Value::as_str) {
+                parts.push(MessagePart::Image {
+                    url: url.to_owned(),
+                    alt: (!body.is_empty()).then(|| body.to_owned()),
+                });
+            }
+        }
+        "m.file" => {
+            if let Some(url) = content.get("url").and_then(Value::as_str) {
+                parts.push(MessagePart::File {
+                    url: url.to_owned(),
+                    name: if body.is_empty() {
+                        "attachment".into()
+                    } else {
+                        body.to_owned()
+                    },
+                });
+            }
+        }
+        other => parts.push(MessagePart::Unsupported {
+            kind: other.to_owned(),
+            details: content.clone(),
+        }),
+    }
+    if parts.is_empty() {
+        parts.push(MessagePart::Unsupported {
+            kind: kind.to_owned(),
+            details: content.clone(),
+        });
+    }
+    parts
 }
 
 fn mark_error(state: &CoreState, account: &AccountRef, error: &str) {
@@ -316,21 +567,6 @@ fn mark_error(state: &CoreState, account: &AccountRef, error: &str) {
             .events
             .send(ServerFrame::AccountChanged { account: snapshot });
     }
-}
-
-fn text_body(parts: &[MessagePart]) -> Result<String> {
-    let mut body = String::new();
-    for part in parts {
-        match part {
-            MessagePart::Text { text } => body.push_str(text),
-            MessagePart::Reply { .. } => {}
-            _ => bail!("Matrix bootstrap sender currently supports text/reply metadata only"),
-        }
-    }
-    if body.is_empty() {
-        bail!("message contains no text");
-    }
-    Ok(body)
 }
 
 #[cfg(test)]
@@ -356,6 +592,48 @@ mod tests {
             network: Network::Matrix,
             id: id.into(),
         }
+    }
+
+    #[test]
+    fn maps_matrix_outgoing_reply_mentions_and_attachment() {
+        let parts = parse_outgoing_parts(&[
+            MessagePart::Reply {
+                message_id: "$event:example.org".into(),
+            },
+            MessagePart::Text {
+                text: "hello".into(),
+            },
+            MessagePart::Mention {
+                id: "@alice:example.org".into(),
+                display_name: Some("Alice <admin>".into()),
+            },
+            MessagePart::Image {
+                url: "media:11111111-1111-4111-8111-111111111111".into(),
+                alt: None,
+            },
+        ])
+        .unwrap();
+        assert_eq!(parts.body, "hello Alice <admin>");
+        assert!(parts.html_body.contains("https://matrix.to/#/@alice:example.org"));
+        assert!(parts.html_body.contains("Alice &lt;admin&gt;"));
+        assert_eq!(parts.mentions.len(), 1);
+        assert!(parts.reply.is_some());
+        assert!(matches!(parts.attachment, Some(OutgoingAttachment::Image { .. })));
+    }
+
+    #[test]
+    fn maps_matrix_incoming_media_reply_and_mentions() {
+        let content = serde_json::json!({
+            "msgtype": "m.image",
+            "body": "cat.png",
+            "url": "mxc://example.org/cat",
+            "m.relates_to": {"m.in_reply_to": {"event_id": "$reply:example.org"}},
+            "m.mentions": {"user_ids": ["@alice:example.org"]}
+        });
+        let parts = incoming_parts(&content);
+        assert!(matches!(&parts[0], MessagePart::Reply { message_id } if message_id == "$reply:example.org"));
+        assert!(matches!(&parts[1], MessagePart::Mention { id, .. } if id == "@alice:example.org"));
+        assert!(matches!(&parts[2], MessagePart::Image { url, .. } if url == "mxc://example.org/cat"));
     }
 
     #[tokio::test]
