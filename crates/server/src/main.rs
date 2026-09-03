@@ -1,6 +1,12 @@
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
+use axum::{
+    extract::Request,
+    http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -8,6 +14,8 @@ use web_bridge_core::{ClientCredential, CoreConfig, CoreRuntime, RuntimeRole, we
 
 const DEV_CLIENT_TOKEN: &str = "dev-client-token";
 const DEV_NAPCAT_TOKEN: &str = "dev-napcat-token";
+const DEVICE_HEADER: &str = "x-web-bridge-device-id";
+const LEGACY_DEVICE_HEADER: &str = "x-device-id";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -53,12 +61,34 @@ async fn main() -> Result<()> {
     );
     runtime.restore_local_sessions().await;
 
-    let app = web::router(runtime.state()).layer(TraceLayer::new_for_http());
+    let app = web::router(runtime.state())
+        .layer(middleware::from_fn(canonicalize_device_header))
+        .layer(TraceLayer::new_for_http());
 
     let listener = TcpListener::bind(bind).await?;
     info!(%bind, "web-bridge shared core running in server mode");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn canonicalize_device_header(mut request: Request, next: Next) -> Response {
+    if let Err(status) = normalize_device_headers(request.headers_mut()) {
+        return status.into_response();
+    }
+    next.run(request).await
+}
+
+fn normalize_device_headers(headers: &mut HeaderMap) -> Result<(), StatusCode> {
+    let canonical = headers.get(DEVICE_HEADER).cloned();
+    let legacy = headers.get(LEGACY_DEVICE_HEADER).cloned();
+    match (canonical, legacy) {
+        (Some(canonical), Some(legacy)) if canonical != legacy => Err(StatusCode::BAD_REQUEST),
+        (Some(canonical), None) => {
+            headers.insert(LEGACY_DEVICE_HEADER, canonical);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn parse_json_env<T: serde::de::DeserializeOwned>(name: &str) -> Result<Option<T>> {
@@ -133,6 +163,39 @@ mod tests {
             vec!["https://one.example", "https://two.example"]
         );
         assert!(parse_allowed_origins(None).is_empty());
+    }
+
+    #[test]
+    fn canonical_device_header_populates_legacy_internal_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(DEVICE_HEADER, "device-a".parse().unwrap());
+        normalize_device_headers(&mut headers).unwrap();
+        assert_eq!(
+            headers.get(LEGACY_DEVICE_HEADER).unwrap(),
+            &"device-a".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn mismatched_device_identity_headers_are_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(DEVICE_HEADER, "device-a".parse().unwrap());
+        headers.insert(LEGACY_DEVICE_HEADER, "device-b".parse().unwrap());
+        assert_eq!(
+            normalize_device_headers(&mut headers),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn legacy_device_header_remains_accepted_during_transition() {
+        let mut headers = HeaderMap::new();
+        headers.insert(LEGACY_DEVICE_HEADER, "legacy-device".parse().unwrap());
+        normalize_device_headers(&mut headers).unwrap();
+        assert_eq!(
+            headers.get(LEGACY_DEVICE_HEADER).unwrap(),
+            &"legacy-device".parse().unwrap()
+        );
     }
 
     #[test]
