@@ -282,40 +282,82 @@ async fn send_qq(
     parts: &[web_bridge_protocol::MessagePart],
     request_id: uuid::Uuid,
 ) -> anyhow::Result<()> {
+    use web_bridge_protocol::MessagePart;
+
     let sender = state
         .qq
         .get(account)
         .map(|entry| entry.value().clone())
         .ok_or_else(|| anyhow::anyhow!("QQ account {} has no NapCat connection", account.id))?;
-    let echo = request_id.to_string();
-    let action =
-        napcat::build_send_action(conversation, parts, echo.clone()).map_err(anyhow::Error::msg)?;
-    let (response_tx, response_rx) = oneshot::channel();
-    state.qq_pending.insert(
-        echo.clone(),
-        PendingQqAction {
-            account: account.clone(),
-            response: response_tx,
-        },
-    );
 
-    if sender.send(action.to_string()).is_err() {
-        state.qq_pending.remove(&echo);
-        anyhow::bail!("NapCat writer closed");
-    }
-
-    match timeout(QQ_ACTION_TIMEOUT, response_rx).await {
-        Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(message))) => Err(anyhow::anyhow!(message)),
-        Ok(Err(_)) => Err(anyhow::anyhow!("NapCat action response channel closed")),
-        Err(_) => {
-            state.qq_pending.remove(&echo);
-            anyhow::bail!(
-                "NapCat action response timed out after {}s",
-                QQ_ACTION_TIMEOUT.as_secs()
-            )
+    let mut prepared = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            MessagePart::Image { url, alt } => {
+                if let Some(local) = state
+                    .media
+                    .local_reference(account, url)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("resolve QQ image media: {error:#}"))?
+                {
+                    prepared.push(MessagePart::Image {
+                        url: local.path.to_string_lossy().into_owned(),
+                        alt: alt.clone(),
+                    });
+                } else {
+                    prepared.push(part.clone());
+                }
+            }
+            MessagePart::File { url, name } => {
+                if let Some(local) = state
+                    .media
+                    .local_reference(account, url)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("resolve QQ file media: {error:#}"))?
+                {
+                    prepared.push(MessagePart::File {
+                        url: local.path.to_string_lossy().into_owned(),
+                        name: name.clone().or(Some(local.info.name)),
+                    });
+                } else {
+                    prepared.push(part.clone());
+                }
+            }
+            _ => prepared.push(part.clone()),
         }
     }
+
+    let actions = napcat::build_send_actions(conversation, &prepared, request_id.to_string())
+        .map_err(anyhow::Error::msg)?;
+    for (echo, action) in actions {
+        let (response_tx, response_rx) = oneshot::channel();
+        state.qq_pending.insert(
+            echo.clone(),
+            PendingQqAction {
+                account: account.clone(),
+                response: response_tx,
+            },
+        );
+
+        if sender.send(action.to_string()).is_err() {
+            state.qq_pending.remove(&echo);
+            anyhow::bail!("NapCat writer closed");
+        }
+
+        match timeout(QQ_ACTION_TIMEOUT, response_rx).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(message))) => return Err(anyhow::anyhow!(message)),
+            Ok(Err(_)) => return Err(anyhow::anyhow!("NapCat action response channel closed")),
+            Err(_) => {
+                state.qq_pending.remove(&echo);
+                anyhow::bail!(
+                    "NapCat action response timed out after {}s",
+                    QQ_ACTION_TIMEOUT.as_secs()
+                )
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn disconnect_provider(state: &CoreState, account: &AccountRef) {
