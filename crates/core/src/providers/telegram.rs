@@ -21,11 +21,7 @@ use web_bridge_protocol::{
     MessagePart, Network, RouteMode, ServerFrame, UnifiedMessage,
 };
 
-use crate::{
-    private_fs::restrict_dir,
-    state::CoreState,
-    telegram_session::RusqliteSession,
-};
+use crate::{private_fs::restrict_dir, state::CoreState, telegram_session::RusqliteSession};
 
 pub struct TelegramHandle {
     pub client: Client,
