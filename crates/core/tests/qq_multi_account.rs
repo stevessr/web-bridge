@@ -2,13 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
-use web_bridge_core::{
-    CoreConfig, CoreState, RuntimeRole, commands,
-    state::PendingQqAction,
-};
-use web_bridge_protocol::{
-    AccountRef, AccountStatus, Command, Network, RouteMode, ServerFrame,
-};
+use web_bridge_core::{CoreConfig, CoreState, RuntimeRole, commands, state::PendingQqAction};
+use web_bridge_protocol::{AccountRef, AccountStatus, Command, Network, RouteMode, ServerFrame};
 
 #[tokio::test]
 async fn removing_one_qq_account_keeps_the_other_online() {
