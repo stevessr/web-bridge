@@ -5198,6 +5198,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",

@@ -19,8 +19,10 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:8787".into())
         .parse()
         .context("invalid WEB_BRIDGE_BIND")?;
-    let client_token = env::var("WEB_BRIDGE_CLIENT_TOKEN").unwrap_or_else(|_| DEV_CLIENT_TOKEN.into());
-    let napcat_token = env::var("WEB_BRIDGE_NAPCAT_TOKEN").unwrap_or_else(|_| DEV_NAPCAT_TOKEN.into());
+    let client_token =
+        env::var("WEB_BRIDGE_CLIENT_TOKEN").unwrap_or_else(|_| DEV_CLIENT_TOKEN.into());
+    let napcat_token =
+        env::var("WEB_BRIDGE_NAPCAT_TOKEN").unwrap_or_else(|_| DEV_NAPCAT_TOKEN.into());
     let client_credentials: Vec<ClientCredential> =
         parse_json_env("WEB_BRIDGE_CLIENT_CREDENTIALS")?.unwrap_or_default();
     let napcat_tokens: HashMap<String, String> =
@@ -99,7 +101,9 @@ fn validate_remote_credentials(
         );
     }
     if !client_credentials.is_empty()
-        && client_credentials.iter().any(|credential| credential.token.is_empty())
+        && client_credentials
+            .iter()
+            .any(|credential| credential.token.is_empty())
     {
         bail!("WEB_BRIDGE_CLIENT_CREDENTIALS contains an empty token");
     }

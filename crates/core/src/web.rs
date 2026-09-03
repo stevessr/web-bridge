@@ -152,7 +152,10 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>, policy: ClientP
             }
         }
     }
-    info!(principal = policy.principal(), "client websocket disconnected");
+    info!(
+        principal = policy.principal(),
+        "client websocket disconnected"
+    );
 }
 
 async fn handle_client_frame(
