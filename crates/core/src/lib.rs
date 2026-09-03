@@ -18,7 +18,7 @@ pub use accounts::{AccountRegistry, RuntimeRole};
 pub use auth::ClientCredential;
 pub use state::{CoreConfig, CoreState};
 use uuid::Uuid;
-use web_bridge_protocol::{AccountRef, AccountSnapshot, Command, RouteMode};
+use web_bridge_protocol::{AccountSnapshot, Command, RouteMode};
 
 #[derive(Clone)]
 pub struct CoreRuntime {
@@ -38,27 +38,6 @@ impl CoreRuntime {
 
     pub fn list_accounts(&self) -> Vec<AccountSnapshot> {
         self.state.accounts.list()
-    }
-
-    pub fn register_account(
-        &self,
-        account: AccountRef,
-        display_name: Option<String>,
-        route: RouteMode,
-    ) -> Result<AccountSnapshot, &'static str> {
-        self.state.accounts.upsert(account, display_name, route)
-    }
-
-    pub fn set_account_route(
-        &self,
-        account: &AccountRef,
-        route: RouteMode,
-    ) -> Result<AccountSnapshot, &'static str> {
-        self.state.accounts.set_route(account, route)
-    }
-
-    pub fn remove_account(&self, account: &AccountRef) -> Option<AccountSnapshot> {
-        self.state.accounts.remove(account)
     }
 
     pub fn route_is_local(&self, route: RouteMode) -> bool {
