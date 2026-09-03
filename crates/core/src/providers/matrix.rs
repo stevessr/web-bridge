@@ -19,7 +19,10 @@ use web_bridge_protocol::{
     Network, RouteMode, ServerFrame, UnifiedMessage,
 };
 
-use crate::state::CoreState;
+use crate::{
+    private_fs::{restrict_dir, restrict_file},
+    state::CoreState,
+};
 
 const SESSION_FILE: &str = "matrix-session.json";
 
@@ -181,10 +184,13 @@ pub fn disconnect(state: &CoreState, account: &AccountRef) {
 }
 
 async fn build_client(state: &CoreState, account: &AccountRef, homeserver: &str) -> Result<Client> {
-    let store_path = state.account_data_dir(account).join("matrix-store");
+    let account_dir = state.account_data_dir(account);
+    let store_path = account_dir.join("matrix-store");
     tokio::fs::create_dir_all(&store_path)
         .await
         .context("create Matrix store directory")?;
+    restrict_dir(&account_dir).context("restrict Matrix account directory permissions")?;
+    restrict_dir(&store_path).context("restrict Matrix store directory permissions")?;
     Client::builder()
         .homeserver_url(homeserver)
         .sqlite_store(&store_path, None)
@@ -203,6 +209,7 @@ async fn persist_session(
     tokio::fs::create_dir_all(&account_dir)
         .await
         .context("create Matrix account directory")?;
+    restrict_dir(&account_dir).context("restrict Matrix account directory permissions")?;
     let bytes = serde_json::to_vec(&StoredMatrixSession {
         homeserver: homeserver.to_owned(),
         session,
@@ -213,9 +220,11 @@ async fn persist_session(
     tokio::fs::write(&temp, bytes)
         .await
         .context("write Matrix session temp file")?;
+    restrict_file(&temp).context("restrict Matrix session temp file permissions")?;
     tokio::fs::rename(&temp, &path)
         .await
         .context("commit Matrix session file")?;
+    restrict_file(&path).context("restrict Matrix session file permissions")?;
     Ok(())
 }
 
