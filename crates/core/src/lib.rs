@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod commands;
+pub mod media;
 pub mod napcat;
 mod private_fs;
 pub mod providers;
