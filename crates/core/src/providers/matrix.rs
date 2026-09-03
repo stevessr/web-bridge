@@ -55,8 +55,13 @@ struct OutgoingMatrixParts {
 }
 
 enum OutgoingAttachment {
-    Image { reference: String },
-    File { reference: String, name: String },
+    Image {
+        reference: String,
+    },
+    File {
+        reference: String,
+        name: Option<String>,
+    },
 }
 
 pub async fn login_password(
@@ -189,7 +194,7 @@ pub async fn send_message(
     if let Some(attachment) = outgoing.attachment {
         let (reference, requested_name) = match attachment {
             OutgoingAttachment::Image { reference } => (reference, None),
-            OutgoingAttachment::File { reference, name } => (reference, Some(name)),
+            OutgoingAttachment::File { reference, name } => (reference, name),
         };
         let loaded = state
             .media
@@ -442,8 +447,8 @@ fn parse_outgoing_parts(parts: &[MessagePart]) -> Result<OutgoingMatrixParts> {
                     name: name.clone(),
                 });
             }
-            MessagePart::Unsupported { kind, .. } => {
-                bail!("matrix_unsupported_message_part: {kind}");
+            MessagePart::Unsupported { raw } => {
+                bail!("matrix_unsupported_message_part: {raw}");
             }
         }
     }
@@ -470,7 +475,12 @@ fn mentions(user_ids: &[OwnedUserId]) -> Option<Mentions> {
 }
 
 fn maybe_separate(body: &mut String, html: &mut String) {
-    if !body.is_empty() && !body.ends_with(char::is_whitespace) {
+    if !body.is_empty()
+        && !body
+            .chars()
+            .last()
+            .is_some_and(char::is_whitespace)
+    {
         body.push(' ');
         html.push(' ');
     }
@@ -535,23 +545,17 @@ fn incoming_parts(content: &Value) -> Vec<MessagePart> {
             if let Some(url) = content.get("url").and_then(Value::as_str) {
                 parts.push(MessagePart::File {
                     url: url.to_owned(),
-                    name: if body.is_empty() {
-                        "attachment".into()
-                    } else {
-                        body.to_owned()
-                    },
+                    name: (!body.is_empty()).then(|| body.to_owned()),
                 });
             }
         }
-        other => parts.push(MessagePart::Unsupported {
-            kind: other.to_owned(),
-            details: content.clone(),
+        _ => parts.push(MessagePart::Unsupported {
+            raw: content.clone(),
         }),
     }
     if parts.is_empty() {
         parts.push(MessagePart::Unsupported {
-            kind: kind.to_owned(),
-            details: content.clone(),
+            raw: content.clone(),
         });
     }
     parts
@@ -614,11 +618,18 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(parts.body, "hello Alice <admin>");
-        assert!(parts.html_body.contains("https://matrix.to/#/@alice:example.org"));
+        assert!(
+            parts
+                .html_body
+                .contains("https://matrix.to/#/@alice:example.org")
+        );
         assert!(parts.html_body.contains("Alice &lt;admin&gt;"));
         assert_eq!(parts.mentions.len(), 1);
         assert!(parts.reply.is_some());
-        assert!(matches!(parts.attachment, Some(OutgoingAttachment::Image { .. })));
+        assert!(matches!(
+            parts.attachment,
+            Some(OutgoingAttachment::Image { .. })
+        ));
     }
 
     #[test]
@@ -631,9 +642,13 @@ mod tests {
             "m.mentions": {"user_ids": ["@alice:example.org"]}
         });
         let parts = incoming_parts(&content);
-        assert!(matches!(&parts[0], MessagePart::Reply { message_id } if message_id == "$reply:example.org"));
+        assert!(
+            matches!(&parts[0], MessagePart::Reply { message_id } if message_id == "$reply:example.org")
+        );
         assert!(matches!(&parts[1], MessagePart::Mention { id, .. } if id == "@alice:example.org"));
-        assert!(matches!(&parts[2], MessagePart::Image { url, .. } if url == "mxc://example.org/cat"));
+        assert!(
+            matches!(&parts[2], MessagePart::Image { url, .. } if url == "mxc://example.org/cat")
+        );
     }
 
     #[tokio::test]
