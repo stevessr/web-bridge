@@ -46,11 +46,7 @@ pub async fn connect_server(
     runtime()
         .connect_remote(&endpoint, &token, device_id)
         .await
-        .map_err(|error| format!("{error:#}"))?;
-    runtime()
-        .remote_command(Command::ListAccounts)
-        .map_err(|error| format!("{error:#}"))?;
-    Ok(())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[flutter_rust_bridge::frb(sync)]
