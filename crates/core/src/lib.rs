@@ -8,6 +8,7 @@ pub mod napcat;
 mod private_fs;
 pub mod providers;
 pub mod remote;
+pub mod remote_media;
 pub mod state;
 pub mod storage;
 pub mod telegram_session;
