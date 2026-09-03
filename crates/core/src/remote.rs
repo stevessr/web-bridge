@@ -11,7 +11,15 @@ use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{net::TcpStream, sync::mpsc, task::AbortHandle, time::sleep};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async,
+    tungstenite::{
+        Message,
+        client::IntoClientRequest,
+        handshake::client::Request,
+        http::{HeaderValue, header::AUTHORIZATION},
+    },
+};
 use uuid::Uuid;
 use web_bridge_protocol::{
     AccountRef, AccountSnapshot, ClientFrame, Command, Network, PROTOCOL_VERSION, RouteMode,
@@ -124,8 +132,8 @@ impl RemoteBridge {
         token: &str,
         device_id: String,
     ) -> Result<Self> {
-        let endpoint = with_token(endpoint, token);
-        let (initial_socket, _) = connect_async(&endpoint)
+        let request = connection_request(endpoint, token)?;
+        let (initial_socket, _) = connect_async(request)
             .await
             .with_context(|| format!("connect web-bridge server at {endpoint}"))?;
         let (outgoing, outbound) = mpsc::unbounded_channel::<ClientFrame>();
@@ -136,7 +144,8 @@ impl RemoteBridge {
         let task_pending = Arc::clone(&pending);
         let task = tokio::spawn(run_remote_manager(
             state,
-            endpoint,
+            endpoint.to_owned(),
+            token.to_owned(),
             device_id,
             initial_socket,
             outbound,
@@ -192,6 +201,7 @@ impl RemoteBridge {
 async fn run_remote_manager(
     state: Arc<CoreState>,
     endpoint: String,
+    token: String,
     device_id: String,
     initial_socket: RemoteSocket,
     mut outbound: mpsc::UnboundedReceiver<ClientFrame>,
@@ -206,7 +216,23 @@ async fn run_remote_manager(
             Some(socket) => socket,
             None => {
                 sleep(reconnect_delay).await;
-                match connect_async(&endpoint).await {
+                let request = match connection_request(&endpoint, &token) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        connected.store(false, Ordering::Release);
+                        let _ = state.events.send(ServerFrame::Error {
+                            request_id: None,
+                            code: "remote_reconnect_failed".into(),
+                            message: format!(
+                                "server reconnect request failed; retrying in {}s: {error:#}",
+                                next_backoff(reconnect_delay).as_secs()
+                            ),
+                        });
+                        reconnect_delay = next_backoff(reconnect_delay);
+                        continue;
+                    }
+                };
+                match connect_async(request).await {
                     Ok((socket, _)) => socket,
                     Err(error) => {
                         connected.store(false, Ordering::Release);
@@ -470,14 +496,17 @@ fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(RECONNECT_MAX)
 }
 
-fn with_token(endpoint: &str, token: &str) -> String {
-    if token.is_empty() {
-        endpoint.to_owned()
-    } else if endpoint.contains('?') {
-        format!("{endpoint}&token={token}")
-    } else {
-        format!("{endpoint}?token={token}")
+fn connection_request(endpoint: &str, token: &str) -> Result<Request> {
+    let mut request = endpoint
+        .into_client_request()
+        .context("build server websocket request")?;
+    if !token.is_empty() {
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("build server authorization header")?;
+        value.set_sensitive(true);
+        request.headers_mut().insert(AUTHORIZATION, value);
     }
+    Ok(request)
 }
 
 fn network_name(network: Network) -> &'static str {
@@ -520,6 +549,31 @@ mod tests {
             status: AccountStatus::Online,
             last_error: None,
         }
+    }
+
+    #[test]
+    fn websocket_auth_uses_sensitive_header_not_query() {
+        let request = connection_request(
+            "wss://bridge.example/v1/ws?transport=native",
+            "do-not-put-me-in-the-url",
+        )
+        .unwrap();
+        assert_eq!(
+            request.uri().to_string(),
+            "wss://bridge.example/v1/ws?transport=native"
+        );
+        assert_eq!(
+            request.headers().get(AUTHORIZATION).unwrap(),
+            "Bearer do-not-put-me-in-the-url"
+        );
+        assert!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(!request.uri().to_string().contains("do-not-put-me-in-the-url"));
     }
 
     #[test]

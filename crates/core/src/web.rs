@@ -1,12 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json, Router,
     extract::{
-        Query, State, WebSocketUpgrade,
+        State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::ORIGIN},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -35,17 +35,19 @@ async fn info_handler(State(state): State<Arc<CoreState>>) -> Json<Value> {
         "protocol": PROTOCOL_VERSION,
         "role": format!("{:?}", state.role).to_lowercase(),
         "routing": {"qq":"server_only","matrix":"server_or_client","telegram":"server_or_client"},
-        "accounts": state.accounts.list(),
     }))
 }
 
 async fn client_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<CoreState>>,
-    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
-    if query.get("token") != Some(&state.config.client_token) {
+    if !bearer_matches(&headers, &state.config.client_token) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !client_origin_allowed(&headers, &state.config.client_allowed_origins) {
+        return StatusCode::FORBIDDEN.into_response();
     }
     ws.on_upgrade(move |socket| client_socket(socket, state))
 }
@@ -237,4 +239,43 @@ fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|token| token == expected)
+}
+
+fn client_origin_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
+    let Some(origin) = headers.get(ORIGIN) else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    allowed_origins.iter().any(|allowed| allowed == origin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bearer_auth_requires_exact_token() {
+        let mut headers = HeaderMap::new();
+        assert!(!bearer_matches(&headers, "secret"));
+        headers.insert("authorization", "Bearer wrong".parse().unwrap());
+        assert!(!bearer_matches(&headers, "secret"));
+        headers.insert("authorization", "Bearer secret".parse().unwrap());
+        assert!(bearer_matches(&headers, "secret"));
+    }
+
+    #[test]
+    fn native_clients_need_no_origin_but_browsers_need_allowlist_match() {
+        let mut headers = HeaderMap::new();
+        let allowed = vec!["https://client.example".to_owned()];
+        assert!(client_origin_allowed(&headers, &allowed));
+
+        headers.insert(ORIGIN, "https://client.example".parse().unwrap());
+        assert!(client_origin_allowed(&headers, &allowed));
+
+        headers.insert(ORIGIN, "https://evil.example".parse().unwrap());
+        assert!(!client_origin_allowed(&headers, &allowed));
+        assert!(!client_origin_allowed(&headers, &[]));
+    }
 }

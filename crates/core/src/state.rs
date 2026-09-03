@@ -17,6 +17,7 @@ use crate::{
 pub struct CoreConfig {
     pub client_token: String,
     pub napcat_token: String,
+    pub client_allowed_origins: Vec<String>,
     pub data_dir: PathBuf,
 }
 
@@ -25,6 +26,7 @@ impl Default for CoreConfig {
         Self {
             client_token: "dev-client-token".into(),
             napcat_token: "dev-napcat-token".into(),
+            client_allowed_origins: Vec::new(),
             data_dir: PathBuf::from("data"),
         }
     }
