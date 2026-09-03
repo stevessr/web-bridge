@@ -3,12 +3,20 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit or ref to validate
+        required: false
+        type: string
 
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
@@ -26,6 +34,8 @@ jobs:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
