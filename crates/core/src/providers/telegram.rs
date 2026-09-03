@@ -8,6 +8,7 @@ use grammers_client::{
     media::Media,
     message::{InputMessage, Message as TelegramMessage},
     peer::Peer,
+    tl,
     update::Update,
 };
 use grammers_mtsender::SenderPool;
@@ -634,6 +635,9 @@ fn incoming_parts(message: &TelegramMessage) -> Vec<MessagePart> {
     }
 
     let text = message.text();
+    if let Some(entities) = message.fmt_entities() {
+        parts.extend(incoming_mention_parts(text, entities));
+    }
     if !text.is_empty() {
         parts.push(MessagePart::Text {
             text: text.to_owned(),
@@ -670,6 +674,40 @@ fn incoming_parts(message: &TelegramMessage) -> Vec<MessagePart> {
         });
     }
     parts
+}
+
+fn incoming_mention_parts(text: &str, entities: &[tl::enums::MessageEntity]) -> Vec<MessagePart> {
+    entities
+        .iter()
+        .filter_map(|entity| match entity {
+            tl::enums::MessageEntity::Mention(mention) => {
+                let label = telegram_utf16_slice(text, mention.offset, mention.length)?;
+                is_telegram_username(&label).then_some(MessagePart::Mention {
+                    id: label,
+                    display_name: None,
+                })
+            }
+            tl::enums::MessageEntity::MentionName(mention) => {
+                let label = telegram_utf16_slice(text, mention.offset, mention.length)?;
+                Some(MessagePart::Mention {
+                    id: mention.user_id.to_string(),
+                    display_name: (!label.is_empty()).then_some(label),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn telegram_utf16_slice(text: &str, offset: i32, length: i32) -> Option<String> {
+    let start = usize::try_from(offset).ok()?;
+    let length = usize::try_from(length).ok()?;
+    if length == 0 {
+        return None;
+    }
+    let end = start.checked_add(length)?;
+    let utf16: Vec<_> = text.encode_utf16().collect();
+    String::from_utf16(utf16.get(start..end)?).ok()
 }
 
 fn is_telegram_username(value: &str) -> bool {
@@ -790,6 +828,40 @@ mod tests {
         .unwrap()
         .to_string();
         assert!(error.contains("telegram_mention_requires_username"));
+    }
+
+    #[test]
+    fn telegram_incoming_entities_map_mentions_with_utf16_offsets() {
+        let text = "👋 @alice hi Bob";
+        let entities = vec![
+            tl::types::MessageEntityMention {
+                offset: 3,
+                length: 6,
+            }
+            .into(),
+            tl::types::MessageEntityMentionName {
+                offset: 13,
+                length: 3,
+                user_id: 42,
+            }
+            .into(),
+        ];
+        let parts = incoming_mention_parts(text, &entities);
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Mention { id, display_name: None } if id == "@alice"
+        ));
+        assert!(matches!(
+            &parts[1],
+            MessagePart::Mention { id, display_name: Some(name) } if id == "42" && name == "Bob"
+        ));
+    }
+
+    #[test]
+    fn telegram_utf16_slice_rejects_invalid_entity_boundaries() {
+        assert_eq!(telegram_utf16_slice("👋 @alice", 3, 6).as_deref(), Some("@alice"));
+        assert!(telegram_utf16_slice("👋 @alice", -1, 2).is_none());
+        assert!(telegram_utf16_slice("👋 @alice", 1, 1).is_none());
     }
 
     #[test]
