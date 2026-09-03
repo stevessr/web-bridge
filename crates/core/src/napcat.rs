@@ -407,8 +407,12 @@ mod tests {
             url: "/srv/media/a.bin".into(),
             name: Some("report.bin".into()),
         };
-        let private_action =
-            build_send_action(&private("10001"), &[file.clone()], "p".into()).unwrap();
+        let private_action = build_send_action(
+            &private("10001"),
+            std::slice::from_ref(&file),
+            "p".into(),
+        )
+        .unwrap();
         assert_eq!(private_action["action"], "upload_private_file");
         assert_eq!(private_action["params"]["user_id"], "10001");
         assert_eq!(private_action["params"]["name"], "report.bin");
