@@ -475,12 +475,7 @@ fn mentions(user_ids: &[OwnedUserId]) -> Option<Mentions> {
 }
 
 fn maybe_separate(body: &mut String, html: &mut String) {
-    if !body.is_empty()
-        && !body
-            .chars()
-            .last()
-            .is_some_and(char::is_whitespace)
-    {
+    if !body.is_empty() && !body.chars().last().is_some_and(char::is_whitespace) {
         body.push(' ');
         html.push(' ');
     }
