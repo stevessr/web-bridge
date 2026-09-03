@@ -1,17 +1,37 @@
-# Environment variables are authoritative in the bootstrap server.
-# This file documents the intended durable configuration model.
+# Environment variables are authoritative in the bootstrap server today.
+# This TOML documents the intended durable configuration model and mirrors
+# the production semantics implemented by the environment-variable bootstrap.
 
 [server]
-bind = "0.0.0.0:8787"
+# Prefer loopback when a TLS reverse proxy is on the same host.
+bind = "127.0.0.1:8787"
 public_url = "https://bridge.example.com"
+# External clients should use wss://bridge.example.com/v1/ws.
+tls_terminated_by_proxy = true
+allowed_origins = ["https://app.example.com"]
+data_dir = "data"
+media_max_bytes = 67108864
 
-[auth]
-client_token = "replace-me"
-napcat_token = "replace-me"
+# Equivalent bootstrap env:
+# WEB_BRIDGE_CLIENT_CREDENTIALS='[{...}]'
+# When this list is non-empty, WEB_BRIDGE_CLIENT_TOKEN is not a fallback.
+[[auth.clients]]
+principal = "desktop"
+token = "replace-with-a-long-random-secret"
+devices = ["flutter-device-id"]
+networks = ["matrix", "telegram"]
+read_only = false
+
+# Equivalent bootstrap env:
+# WEB_BRIDGE_NAPCAT_TOKENS='{"10001":"..."}'
+[[auth.napcat_accounts]]
+self_id = "10001"
+token = "replace-with-a-different-long-random-secret"
 
 [providers.qq]
 mode = "server"
 adapter = "napcat-onebot11"
+reverse_ws_path = "/onebot/v11/ws"
 
 [providers.matrix]
 default_mode = "client"
@@ -20,3 +40,8 @@ allow_server = true
 [providers.telegram]
 default_mode = "client"
 allow_server = true
+
+[media]
+upload_path = "/v1/media/{network}/{account_id}"
+download_path = "/v1/media/{network}/{account_id}/{media_id}"
+device_header = "X-Web-Bridge-Device-ID"
