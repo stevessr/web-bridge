@@ -9,6 +9,7 @@ use web_bridge_protocol::AccountRef;
 use crate::media::{LoadedMedia, MAX_MEDIA_BYTES, MediaStore, StoredMediaInfo};
 
 const DEVICE_HEADER: &str = "x-web-bridge-device-id";
+const LEGACY_DEVICE_HEADER: &str = "x-device-id";
 const FILE_NAME_HEADER: &str = "x-file-name";
 
 #[derive(Clone)]
@@ -67,6 +68,7 @@ impl RemoteMediaClient {
             .post(url)
             .header(AUTHORIZATION, self.authorization.clone())
             .header(DEVICE_HEADER, self.device_id.clone())
+            .header(LEGACY_DEVICE_HEADER, self.device_id.clone())
             .header(FILE_NAME_HEADER, name)
             .header(CONTENT_TYPE, content_type)
             .body(bytes)
@@ -103,6 +105,7 @@ impl RemoteMediaClient {
             .get(url)
             .header(AUTHORIZATION, self.authorization.clone())
             .header(DEVICE_HEADER, self.device_id.clone())
+            .header(LEGACY_DEVICE_HEADER, self.device_id.clone())
             .send()
             .await
             .context("download media from web-bridge server")?
