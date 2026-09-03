@@ -38,7 +38,7 @@ pub async fn execute(
             }
         }
         Command::RemoveAccount { account } => {
-            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+            if let Some(frame) = local_account_error(state, &account, request_id) {
                 return vec![frame];
             }
             disconnect_provider(state, &account).await;
@@ -162,7 +162,7 @@ pub async fn execute(
             }
         }
         Command::DisconnectAccount { account } => {
-            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+            if let Some(frame) = local_account_error(state, &account, request_id) {
                 return vec![frame];
             }
             disconnect_provider(state, &account).await;
@@ -200,7 +200,7 @@ pub async fn execute(
             }
         }
         Command::ListConversations { account, limit } => {
-            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+            if let Some(frame) = local_account_error(state, &account, request_id) {
                 return vec![frame];
             }
             match state.storage.list_conversations(&account, limit) {
@@ -217,7 +217,7 @@ pub async fn execute(
             before,
             limit,
         } => {
-            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+            if let Some(frame) = local_account_error(state, &account, request_id) {
                 return vec![frame];
             }
             match state
@@ -232,7 +232,7 @@ pub async fn execute(
             }
         }
         Command::GetCursor { account, key } => {
-            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+            if let Some(frame) = local_account_error(state, &account, request_id) {
                 return vec![frame];
             }
             match state.storage.cursor(&account, &key) {
@@ -250,7 +250,7 @@ pub async fn execute(
             key,
             value,
         } => {
-            if let Err(frame) = ensure_local_account(state, &account, request_id) {
+            if let Some(frame) = local_account_error(state, &account, request_id) {
                 return vec![frame];
             }
             match state.storage.set_cursor(&account, &key, &value) {
@@ -338,18 +338,18 @@ async fn purge_provider_data(state: &CoreState, account: &AccountRef) -> anyhow:
     }
 }
 
-fn ensure_local_account(
+fn local_account_error(
     state: &CoreState,
     account: &AccountRef,
     request_id: uuid::Uuid,
-) -> Result<(), ServerFrame> {
+) -> Option<ServerFrame> {
     let Some(snapshot) = state.accounts.get(account) else {
-        return Err(account_not_found(request_id));
+        return Some(account_not_found(request_id));
     };
     if !state.role.route_is_local(snapshot.route) {
-        return Err(route_not_local(request_id));
+        return Some(route_not_local(request_id));
     }
-    Ok(())
+    None
 }
 
 fn route_not_local(request_id: uuid::Uuid) -> ServerFrame {
