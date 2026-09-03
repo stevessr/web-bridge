@@ -2,13 +2,17 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{
-        State, WebSocketUpgrade,
+        Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode, header::ORIGIN},
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{CONTENT_TYPE, ORIGIN},
+    },
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -20,7 +24,9 @@ use web_bridge_protocol::{
 
 use crate::{
     auth::{ClientPolicy, resolve_client_policy},
-    commands, napcat,
+    commands,
+    media::{MAX_MEDIA_BYTES, MediaStore},
+    napcat,
     state::CoreState,
 };
 
@@ -29,6 +35,11 @@ pub fn router(state: Arc<CoreState>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/info", get(info_handler))
         .route("/v1/ws", get(client_upgrade))
+        .route("/v1/media/{network}/{account_id}", post(media_upload))
+        .route(
+            "/v1/media/{network}/{account_id}/{media_id}",
+            get(media_download),
+        )
         .route("/onebot/v11/ws", get(napcat_upgrade))
         .with_state(state)
 }
@@ -39,6 +50,7 @@ async fn info_handler(State(state): State<Arc<CoreState>>) -> Json<Value> {
         "protocol": PROTOCOL_VERSION,
         "role": format!("{:?}", state.role).to_lowercase(),
         "routing": {"qq":"server_only","matrix":"server_or_client","telegram":"server_or_client"},
+        "media": {"max_bytes": MAX_MEDIA_BYTES},
     }))
 }
 
@@ -61,6 +73,99 @@ async fn client_upgrade(
         return StatusCode::FORBIDDEN.into_response();
     }
     ws.on_upgrade(move |socket| client_socket(socket, state, policy))
+}
+
+async fn media_upload(
+    Path((network, account_id)): Path<(String, String)>,
+    State(state): State<Arc<CoreState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(network) = parse_network(&network) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let account = AccountRef {
+        network,
+        id: account_id,
+    };
+    let policy = match http_client_policy(&headers, &state) {
+        Ok(policy) => policy,
+        Err(status) => return status.into_response(),
+    };
+    if !policy.allows_network(network) || !policy.allows_write() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !is_local_registered_account(&state, &account) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if body.len() > MAX_MEDIA_BYTES {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+
+    let name = headers
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("attachment")
+        .to_owned();
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    match state.media.store(&account, name, content_type, &body).await {
+        Ok(info) => Json(json!({
+            "reference": MediaStore::reference(&info),
+            "id": info.id,
+            "name": info.name,
+            "content_type": info.content_type,
+            "size": info.size,
+        }))
+        .into_response(),
+        Err(error) => {
+            warn!(network = ?network, account = %account.id, %error, "media upload failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn media_download(
+    Path((network, account_id, media_id)): Path<(String, String, String)>,
+    State(state): State<Arc<CoreState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(network) = parse_network(&network) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let account = AccountRef {
+        network,
+        id: account_id,
+    };
+    let policy = match http_client_policy(&headers, &state) {
+        Ok(policy) => policy,
+        Err(status) => return status.into_response(),
+    };
+    if !policy.allows_network(network) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !is_local_registered_account(&state, &account) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let loaded = match state.media.load(&account, &media_id).await {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            warn!(network = ?network, account = %account.id, media_id = %media_id, %error, "media download failed");
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    };
+    let mut response = loaded.bytes.into_response();
+    if let Ok(value) = HeaderValue::from_str(&loaded.info.content_type) {
+        response.headers_mut().insert(CONTENT_TYPE, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&loaded.info.name) {
+        response.headers_mut().insert("x-file-name", value);
+    }
+    response
 }
 
 async fn napcat_upgrade(
@@ -152,10 +257,7 @@ async fn client_socket(socket: WebSocket, state: Arc<CoreState>, policy: ClientP
             }
         }
     }
-    info!(
-        principal = policy.principal(),
-        "client websocket disconnected"
-    );
+    info!(principal = policy.principal(), "client websocket disconnected");
 }
 
 async fn handle_client_frame(
@@ -327,6 +429,43 @@ fn client_origin_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> boo
     allowed_origins.iter().any(|allowed| allowed == origin)
 }
 
+fn http_client_policy(headers: &HeaderMap, state: &CoreState) -> Result<ClientPolicy, StatusCode> {
+    if !client_origin_allowed(headers, &state.config.client_allowed_origins) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let token = bearer_token(headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let policy = resolve_client_policy(
+        token,
+        &state.config.client_token,
+        &state.config.client_credentials,
+    )
+    .ok_or(StatusCode::UNAUTHORIZED)?;
+    let device_id = headers
+        .get("x-device-id")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !policy.allows_device(device_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(policy)
+}
+
+fn is_local_registered_account(state: &CoreState, account: &AccountRef) -> bool {
+    state
+        .accounts
+        .get(account)
+        .is_some_and(|snapshot| state.role.route_is_local(snapshot.route))
+}
+
+fn parse_network(value: &str) -> Option<Network> {
+    match value {
+        "qq" => Some(Network::Qq),
+        "matrix" => Some(Network::Matrix),
+        "telegram" => Some(Network::Telegram),
+        _ => None,
+    }
+}
+
 fn session_error(code: &str, message: &str) -> ServerFrame {
     ServerFrame::Error {
         request_id: None,
@@ -363,6 +502,33 @@ mod tests {
         headers.insert(ORIGIN, "https://evil.example".parse().unwrap());
         assert!(!client_origin_allowed(&headers, &allowed));
         assert!(!client_origin_allowed(&headers, &[]));
+    }
+
+    #[test]
+    fn http_media_auth_requires_bound_device() {
+        let state = CoreState::new(
+            RuntimeRole::Server,
+            CoreConfig {
+                client_credentials: vec![ClientCredential {
+                    token: "reader".into(),
+                    principal: "reader".into(),
+                    devices: vec!["device-a".into()],
+                    networks: vec![Network::Matrix],
+                    read_only: true,
+                }],
+                ..CoreConfig::default()
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer reader".parse().unwrap());
+        assert_eq!(
+            http_client_policy(&headers, &state).err(),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        headers.insert("x-device-id", "device-a".parse().unwrap());
+        let policy = http_client_policy(&headers, &state).unwrap();
+        assert!(policy.allows_network(Network::Matrix));
+        assert!(!policy.allows_write());
     }
 
     #[tokio::test]
