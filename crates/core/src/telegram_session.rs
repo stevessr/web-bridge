@@ -9,6 +9,8 @@ use grammers_session::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::private_fs::restrict_file;
+
 pub struct RusqliteSession {
     inner: Mutex<SessionInner>,
 }
@@ -22,6 +24,8 @@ struct SessionInner {
 pub enum RusqliteSessionError {
     #[error("Telegram session SQLite error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("Telegram session filesystem error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("Telegram session serialization error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Telegram session lock poisoned")]
@@ -31,6 +35,7 @@ pub enum RusqliteSessionError {
 impl RusqliteSession {
     pub fn open(path: &Path) -> Result<Self, RusqliteSessionError> {
         let connection = Connection::open(path)?;
+        restrict_file(path)?;
         connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS telegram_session_state (
@@ -208,6 +213,9 @@ mod tests {
     use grammers_session::types::{PeerAuth, PeerInfo};
     use uuid::Uuid;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     #[test]
     fn session_backend_is_sender_pool_safe() {
         fn assert_traits<T: Session + Send + Sync>() {}
@@ -229,6 +237,11 @@ mod tests {
 
         {
             let session = RusqliteSession::open(&path).unwrap();
+            #[cfg(unix)]
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
             session.set_home_dc_id(4).await.unwrap();
             let mut dc = session.dc_option(4).unwrap().unwrap();
             dc.auth_key = Some([7; 256]);
