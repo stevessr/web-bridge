@@ -23,6 +23,11 @@ pub struct LoadedMedia {
     pub bytes: Vec<u8>,
 }
 
+pub struct LocalMedia {
+    pub info: StoredMediaInfo,
+    pub path: PathBuf,
+}
+
 pub struct MediaStore {
     root: PathBuf,
 }
@@ -81,23 +86,17 @@ impl MediaStore {
     }
 
     pub async fn load(&self, account: &AccountRef, id: &str) -> Result<LoadedMedia> {
-        validate_id(id)?;
-        let account_dir = self.account_dir(account);
-        let metadata = tokio::fs::read(account_dir.join(format!("{id}.json")))
-            .await
-            .context("read media metadata")?;
-        let info: StoredMediaInfo =
-            serde_json::from_slice(&metadata).context("decode media metadata")?;
-        if info.id != id {
-            bail!("media metadata id mismatch");
-        }
-        let bytes = tokio::fs::read(account_dir.join(format!("{id}.bin")))
+        let local = self.local(account, id).await?;
+        let bytes = tokio::fs::read(&local.path)
             .await
             .context("read media data")?;
-        if bytes.len() as u64 != info.size {
+        if bytes.len() as u64 != local.info.size {
             bail!("media size does not match metadata");
         }
-        Ok(LoadedMedia { info, bytes })
+        Ok(LoadedMedia {
+            info: local.info,
+            bytes,
+        })
     }
 
     pub async fn load_reference(
@@ -109,6 +108,41 @@ impl MediaStore {
             return Ok(None);
         };
         self.load(account, id).await.map(Some)
+    }
+
+    pub async fn local_reference(
+        &self,
+        account: &AccountRef,
+        reference: &str,
+    ) -> Result<Option<LocalMedia>> {
+        let Some(id) = reference.strip_prefix(MEDIA_PREFIX) else {
+            return Ok(None);
+        };
+        self.local(account, id).await.map(Some)
+    }
+
+    async fn local(&self, account: &AccountRef, id: &str) -> Result<LocalMedia> {
+        validate_id(id)?;
+        let account_dir = self.account_dir(account);
+        let metadata = tokio::fs::read(account_dir.join(format!("{id}.json")))
+            .await
+            .context("read media metadata")?;
+        let info: StoredMediaInfo =
+            serde_json::from_slice(&metadata).context("decode media metadata")?;
+        if info.id != id {
+            bail!("media metadata id mismatch");
+        }
+        if info.size > MAX_MEDIA_BYTES as u64 {
+            bail!("media metadata exceeds size limit");
+        }
+        let path = account_dir.join(format!("{id}.bin"));
+        let actual = tokio::fs::metadata(&path)
+            .await
+            .context("inspect media data")?;
+        if !actual.is_file() || actual.len() != info.size {
+            bail!("media size does not match metadata");
+        }
+        Ok(LocalMedia { info, path })
     }
 
     pub async fn remove_account(&self, account: &AccountRef) -> Result<()> {
@@ -124,6 +158,14 @@ impl MediaStore {
 
     pub fn reference(info: &StoredMediaInfo) -> String {
         format!("{MEDIA_PREFIX}{}", info.id)
+    }
+
+    pub fn parse_reference(reference: &str) -> Result<String> {
+        let id = reference
+            .strip_prefix(MEDIA_PREFIX)
+            .context("media reference must start with media:")?;
+        validate_id(id)?;
+        Ok(id.to_owned())
     }
 
     fn account_dir(&self, account: &AccountRef) -> PathBuf {
@@ -195,7 +237,7 @@ mod tests {
     use web_bridge_protocol::Network;
 
     #[tokio::test]
-    async fn media_is_isolated_by_account_and_removed_with_account_namespace() {
+    async fn media_is_isolated_by_account_and_network_and_removed_with_namespace() {
         let root = std::env::temp_dir().join(format!("web-bridge-media-{}", Uuid::new_v4()));
         let store = MediaStore::new(root.clone());
         let account_a = AccountRef {
@@ -206,6 +248,10 @@ mod tests {
             network: Network::Matrix,
             id: "b".into(),
         };
+        let account_other_network = AccountRef {
+            network: Network::Telegram,
+            id: "a".into(),
+        };
         let info = store
             .store(
                 &account_a,
@@ -215,13 +261,21 @@ mod tests {
             )
             .await
             .unwrap();
+        let reference = MediaStore::reference(&info);
         assert_eq!(info.name, "photo.png");
-        assert_eq!(MediaStore::reference(&info), format!("media:{}", info.id));
+        assert_eq!(reference, format!("media:{}", info.id));
+        assert_eq!(MediaStore::parse_reference(&reference).unwrap(), info.id);
         assert_eq!(
             store.load(&account_a, &info.id).await.unwrap().bytes,
             b"image-bytes"
         );
+        let local = store.local_reference(&account_a, &reference).await.unwrap().unwrap();
+        assert_eq!(local.info.name, "photo.png");
+        assert!(local.path.is_file());
         assert!(store.load(&account_b, &info.id).await.is_err());
+        assert!(store.load(&account_other_network, &info.id).await.is_err());
+        assert!(MediaStore::parse_reference("media:../../etc/passwd").is_err());
+        assert!(MediaStore::parse_reference("not-media").is_err());
 
         store.remove_account(&account_a).await.unwrap();
         assert!(store.load(&account_a, &info.id).await.is_err());
