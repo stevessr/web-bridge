@@ -1,4 +1,7 @@
-use std::{path::Path, sync::{Mutex, OnceLock}};
+use std::{
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use tokio::sync::{OnceCell, broadcast};
 use uuid::Uuid;

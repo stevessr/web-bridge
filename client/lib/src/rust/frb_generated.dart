@@ -64,7 +64,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1759014507;
+  int get rustContentHash => 1883819363;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -93,6 +93,15 @@ abstract class RustLibApi extends BaseApi {
   int crateApiProtocolVersion();
 
   bool crateApiRouteIsAllowed({required String network, required String route});
+
+  Future<String> crateApiUploadMedia({
+    required String network,
+    required String accountId,
+    required String route,
+    required String path,
+    required String filename,
+    required String contentType,
+  });
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -284,6 +293,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiRouteIsAllowedConstMeta => const TaskConstMeta(
     debugName: "route_is_allowed",
     argNames: ["network", "route"],
+  );
+
+  @override
+  Future<String> crateApiUploadMedia({
+    required String network,
+    required String accountId,
+    required String route,
+    required String path,
+    required String filename,
+    required String contentType,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(network, serializer);
+          sse_encode_String(accountId, serializer);
+          sse_encode_String(route, serializer);
+          sse_encode_String(path, serializer);
+          sse_encode_String(filename, serializer);
+          sse_encode_String(contentType, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiUploadMediaConstMeta,
+        argValues: [network, accountId, route, path, filename, contentType],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiUploadMediaConstMeta => const TaskConstMeta(
+    debugName: "upload_media",
+    argNames: [
+      "network",
+      "accountId",
+      "route",
+      "path",
+      "filename",
+      "contentType",
+    ],
   );
 
   @protected

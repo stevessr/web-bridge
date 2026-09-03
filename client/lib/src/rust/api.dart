@@ -6,7 +6,7 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_route`, `command_route`, `ensure_local_sessions_restored`, `event_receiver`, `network_name`, `parse_network`, `parse_route`, `runtime`
+// These functions are ignored because they are not marked as `pub`: `account_route`, `command_route`, `ensure_local_sessions_restored`, `event_receiver`, `network_name`, `parse_network`, `parse_route`, `remote_media`, `runtime`
 
 int protocolVersion() => RustLib.instance.api.crateApiProtocolVersion();
 
@@ -27,6 +27,22 @@ void disconnectServer() => RustLib.instance.api.crateApiDisconnectServer();
 
 Future<String> executeCommandJson({required String commandJson}) =>
     RustLib.instance.api.crateApiExecuteCommandJson(commandJson: commandJson);
+
+Future<String> uploadMedia({
+  required String network,
+  required String accountId,
+  required String route,
+  required String path,
+  required String filename,
+  required String contentType,
+}) => RustLib.instance.api.crateApiUploadMedia(
+  network: network,
+  accountId: accountId,
+  route: route,
+  path: path,
+  filename: filename,
+  contentType: contentType,
+);
 
 String drainEventsJson() => RustLib.instance.api.crateApiDrainEventsJson();
 

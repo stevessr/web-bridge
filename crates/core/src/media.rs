@@ -269,7 +269,11 @@ mod tests {
             store.load(&account_a, &info.id).await.unwrap().bytes,
             b"image-bytes"
         );
-        let local = store.local_reference(&account_a, &reference).await.unwrap().unwrap();
+        let local = store
+            .local_reference(&account_a, &reference)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(local.info.name, "photo.png");
         assert!(local.path.is_file());
         assert!(store.load(&account_b, &info.id).await.is_err());

@@ -42,7 +42,8 @@ impl RemoteMediaClient {
         let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
             .context("build remote media authorization header")?;
         authorization.set_sensitive(true);
-        let device_id = HeaderValue::from_str(device_id).context("build remote media device header")?;
+        let device_id =
+            HeaderValue::from_str(device_id).context("build remote media device header")?;
 
         Ok(Self {
             client: Client::new(),
@@ -244,9 +245,7 @@ mod tests {
     #[test]
     fn ws_maps_to_http_and_rejects_unexpected_path() {
         assert_eq!(
-            media_root("ws://127.0.0.1:8787/v1/ws")
-                .unwrap()
-                .as_str(),
+            media_root("ws://127.0.0.1:8787/v1/ws").unwrap().as_str(),
             "http://127.0.0.1:8787/v1/media"
         );
         assert!(media_root("https://bridge.example/v1/ws").is_err());
