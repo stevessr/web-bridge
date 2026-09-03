@@ -95,7 +95,9 @@ pub fn build_send_actions(
     if parts.is_empty() {
         return Err("QQ message has no parts");
     }
-    let has_file = parts.iter().any(|part| matches!(part, MessagePart::File { .. }));
+    let has_file = parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::File { .. }));
     if has_file
         && parts
             .iter()
@@ -405,8 +407,8 @@ mod tests {
             url: "/srv/media/a.bin".into(),
             name: Some("report.bin".into()),
         };
-        let private_action = build_send_action(&private("10001"), &[file.clone()], "p".into())
-            .unwrap();
+        let private_action =
+            build_send_action(&private("10001"), &[file.clone()], "p".into()).unwrap();
         assert_eq!(private_action["action"], "upload_private_file");
         assert_eq!(private_action["params"]["user_id"], "10001");
         assert_eq!(private_action["params"]["name"], "report.bin");
@@ -457,9 +459,15 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert!(matches!(&message.parts[0], MessagePart::Reply { message_id } if message_id == "12"));
+        assert!(
+            matches!(&message.parts[0], MessagePart::Reply { message_id } if message_id == "12")
+        );
         assert!(matches!(&message.parts[1], MessagePart::Mention { id, .. } if id == "10002"));
-        assert!(matches!(&message.parts[2], MessagePart::Image { url, .. } if url == "https://img.test/a.jpg"));
-        assert!(matches!(&message.parts[3], MessagePart::File { url, name } if url == "file-1" && name.as_deref() == Some("a.zip")));
+        assert!(
+            matches!(&message.parts[2], MessagePart::Image { url, .. } if url == "https://img.test/a.jpg")
+        );
+        assert!(
+            matches!(&message.parts[3], MessagePart::File { url, name } if url == "file-1" && name.as_deref() == Some("a.zip"))
+        );
     }
 }
