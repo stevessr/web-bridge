@@ -326,7 +326,7 @@ fn read_message_row(row: &Row<'_>) -> rusqlite::Result<StoredMessageRow> {
     })
 }
 
-const fn bounded_limit(limit: u32) -> i64 {
+fn bounded_limit(limit: u32) -> i64 {
     limit.clamp(1, MAX_QUERY_LIMIT) as i64
 }
 
