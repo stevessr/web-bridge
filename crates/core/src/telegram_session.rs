@@ -229,13 +229,9 @@ fn export_legacy_data(path: &Path) -> Result<SessionData, RusqliteSessionError> 
         for row in rows {
             let (id, ipv4, ipv6, auth_key) = row?;
             let auth_key = match auth_key {
-                Some(bytes) => Some(
-                    bytes
-                        .try_into()
-                        .map_err(|bytes: Vec<u8>| {
-                            RusqliteSessionError::InvalidLegacyAuthKeyLength(bytes.len())
-                        })?,
-                ),
+                Some(bytes) => Some(bytes.try_into().map_err(|bytes: Vec<u8>| {
+                    RusqliteSessionError::InvalidLegacyAuthKeyLength(bytes.len())
+                })?),
                 None => None,
             };
             let option = DcOption {
@@ -585,12 +581,16 @@ mod tests {
             } if auth.hash() == 789
         ));
         let updates = session.updates_state().await.unwrap();
-        assert_eq!((updates.pts, updates.qts, updates.date, updates.seq), (10, 11, 20, 30));
+        assert_eq!(
+            (updates.pts, updates.qts, updates.date, updates.seq),
+            (10, 11, 20, 30)
+        );
         assert_eq!(updates.channels, vec![ChannelState { id: 99, pts: 40 }]);
 
         let backup = append_suffix(&path, LEGACY_BACKUP_SUFFIX);
         assert!(backup.exists());
-        let legacy = Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let legacy =
+            Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         assert!(table_exists(&legacy, "dc_home").unwrap());
         assert!(!table_exists(&legacy, "telegram_session_state").unwrap());
         let current = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
@@ -655,7 +655,9 @@ mod tests {
                  PRAGMA user_version = 1;",
             )
             .unwrap();
-        connection.execute("INSERT INTO dc_home VALUES (4)", []).unwrap();
+        connection
+            .execute("INSERT INTO dc_home VALUES (4)", [])
+            .unwrap();
         connection
             .execute(
                 "INSERT INTO dc_option VALUES (?1, ?2, ?3, ?4)",
